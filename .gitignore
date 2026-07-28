@@ -1,0 +1,49 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ── Environment ────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.env
+
+# ── Node / SvelteKit ───────────────────────────────────────────
+node_modules/
+.svelte-kit/
+.vercel/
+build/
+dist/
+*.tsbuildinfo
+
+# ── IDE ────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Alembic ────────────────────────────────────────────────────
+alembic/versions/*.pyc
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Docker ────────────────────────────────────────────────────
+docker-compose.override.yml
