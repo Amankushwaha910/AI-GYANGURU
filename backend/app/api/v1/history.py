@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import CurrentUser
+from app.core.dependencies import CurrentUser, CurrentUserFast
 from app.schemas.common import APIResponse, PaginatedResponse
 from app.services.history_service import HistoryService
 
@@ -36,7 +36,7 @@ class HistoryItemOut(BaseModel):
 
 @router.get("", response_model=PaginatedResponse[HistoryItemOut])
 async def get_history(
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -67,7 +67,7 @@ async def get_history(
 @router.delete("/{item_id}", response_model=APIResponse[None])
 async def delete_history_item(
     item_id: UUID,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a single history item."""
@@ -78,7 +78,7 @@ async def delete_history_item(
 
 @router.delete("", response_model=APIResponse[None])
 async def clear_history_by_type(
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
     item_type: str = Query(
         ..., description="Type to clear: summary, explanation, quiz, upload"

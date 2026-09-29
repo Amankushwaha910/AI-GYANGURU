@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 class DailyActivityItem(BaseModel):
     date: date
-    count: int
+    count: float  # int for activity counts, float for accuracy percentages
 
 
 class CategoryAccuracy(BaseModel):

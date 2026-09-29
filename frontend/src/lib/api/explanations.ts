@@ -2,10 +2,10 @@ import { api } from './client';
 import type { APIResponse, Explanation, ExplanationListItem, PaginatedResponse } from '$types';
 
 export const explanationsApi = {
-	generate: (data: { topic: string; model?: string }) =>
+	generate: (data: { topic: string; model?: string; provider?: string }) =>
 		api.post<APIResponse<Explanation>>('/explanations', data),
 
-	generateFromFile: (data: { upload_id: string; model?: string }) =>
+	generateFromFile: (data: { upload_id: string; model?: string; provider?: string }) =>
 		api.post<APIResponse<Explanation>>('/explanations/from-file', data),
 
 	list: (params: { page?: number; page_size?: number; search?: string } = {}) => {

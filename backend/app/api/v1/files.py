@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import CurrentUser
+from app.core.dependencies import CurrentUser, CurrentUserFast
 from app.schemas.common import APIResponse, PaginatedResponse
 from app.schemas.upload import UploadListItem, UploadResponse
 from app.services.file_service import FileService
@@ -18,14 +18,14 @@ router = APIRouter(prefix="/files", tags=["File Upload"])
 
 @router.post("", response_model=APIResponse[UploadResponse], status_code=201)
 async def upload_file(
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
+    background_tasks: BackgroundTasks,   # injected by FastAPI — NOT a default value
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Upload a file (PDF, DOCX, TXT, or image).
-    Text extraction runs as a background task.
+    Text extraction runs as a background task after the 201 response is sent.
     Poll GET /files/{id} to check when status becomes 'completed'.
     """
     service = FileService(db)
@@ -52,7 +52,7 @@ async def upload_file(
 
 @router.get("", response_model=PaginatedResponse[UploadListItem])
 async def list_files(
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,   # fast — no profile needed for file list
     db: AsyncSession = Depends(get_db),
     page: int = 1,
     page_size: int = 20,
@@ -76,7 +76,7 @@ async def list_files(
 @router.get("/{upload_id}", response_model=APIResponse[UploadResponse])
 async def get_file(
     upload_id: UUID,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,   # fast — polled every 3 s, profile not needed
     db: AsyncSession = Depends(get_db),
 ):
     """Get details of a specific uploaded file including processing status."""
@@ -100,7 +100,7 @@ async def get_file(
 @router.delete("/{upload_id}", response_model=APIResponse[None])
 async def delete_file(
     upload_id: UUID,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete an uploaded file from storage and database."""

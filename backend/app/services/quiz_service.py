@@ -51,6 +51,7 @@ class QuizService:
         ai_response, _ = await self.dispatcher.complete(
             messages=messages,
             model=request.model,
+            provider=getattr(request, 'provider', None),
             temperature=0.5,  # Lower temp for factual accuracy
         )
 
@@ -84,7 +85,9 @@ class QuizService:
         )
 
         ai_response, _ = await self.dispatcher.complete(
-            messages=messages, model=request.model, temperature=0.5
+            messages=messages, model=request.model,
+            provider=getattr(request, 'provider', None),
+            temperature=0.5
         )
 
         parsed = self.formatter.extract_json(ai_response.content)

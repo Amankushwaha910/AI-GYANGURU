@@ -29,7 +29,8 @@
 				} else {
 					authStore.clearAuth();
 				}
-			} catch {
+			} catch (err: any) {
+				// Token invalid/expired — clear session silently
 				authStore.clearAuth();
 			}
 		} else {

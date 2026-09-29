@@ -20,6 +20,7 @@ export const quizzesApi = {
 		difficulty?: QuizDifficulty;
 		category?: string;
 		model?: string;
+		provider?: string;
 	}) => api.post<APIResponse<Quiz>>('/quizzes', data),
 
 	generateFromFile: (data: {
@@ -28,6 +29,7 @@ export const quizzesApi = {
 		difficulty?: QuizDifficulty;
 		category?: string;
 		model?: string;
+		provider?: string;
 	}) => api.post<APIResponse<Quiz>>('/quizzes/from-file', data),
 
 	list: (params: { page?: number; page_size?: number; search?: string } = {}) => {

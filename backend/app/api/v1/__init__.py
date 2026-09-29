@@ -7,6 +7,7 @@ from app.api.v1 import (
     explanations,
     files,
     history,
+    models,
     quizzes,
     summaries,
     users,
@@ -23,3 +24,4 @@ api_router.include_router(quizzes.router)
 api_router.include_router(files.router)
 api_router.include_router(analytics.router)
 api_router.include_router(history.router)
+api_router.include_router(models.router)

@@ -7,8 +7,10 @@ import { goto } from '$app/navigation';
 import { authStore } from '$lib/stores/auth';
 import type { APIError } from '$types';
 import { get } from 'svelte/store';
+// SvelteKit: PUBLIC_ vars must be accessed via $env/static/public, not import.meta.env.
+import { PUBLIC_API_URL } from '$env/static/public';
 
-const API_BASE = import.meta.env.PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
+const API_BASE: string = PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
 export class ApiClientError extends Error {
 	constructor(

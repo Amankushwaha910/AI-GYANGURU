@@ -235,3 +235,31 @@ export interface DashboardData {
 	weekly_activity: DailyActivityItem[];
 	quiz_accuracy_week: DailyActivityItem[];
 }
+
+// ── AI Models ─────────────────────────────────────────────────────────────────
+
+export interface AIModelInfo {
+	id: string;
+	display_name: string;
+	description: string;
+	provider: string;
+}
+
+export interface AIProviderInfo {
+	name: string;
+	display_name: string;
+	description: string;
+	models: AIModelInfo[];
+}
+
+export interface AIModelsResponse {
+	default_provider: string;
+	default_model: string;
+	providers: AIProviderInfo[];
+}
+
+export interface SelectedModel {
+	provider: string;
+	model: string;
+	display: string; // e.g. "Groq — Llama 3.3 70B"
+}

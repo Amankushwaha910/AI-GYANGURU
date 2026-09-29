@@ -47,6 +47,7 @@ class SummaryService:
         ai_response, latency = await self.dispatcher.complete(
             messages=messages,
             model=request.model,
+            provider=getattr(request, 'provider', None),
             temperature=0.7,
         )
 
@@ -96,6 +97,7 @@ class SummaryService:
         ai_response, _ = await self.dispatcher.complete(
             messages=messages,
             model=request.model,
+            provider=getattr(request, 'provider', None),
             temperature=0.7,
         )
 

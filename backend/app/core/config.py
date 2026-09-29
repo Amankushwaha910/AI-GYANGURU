@@ -49,19 +49,39 @@ class Settings(BaseSettings):
 
     # ── AI Provider ──────────────────────────────────────────
     groq_api_key: str
-    groq_default_model: str = "llama-3.3-70b-versatile"
+    # Default model — must be available on the Developer plan.
+    # llama-3.3-70b-versatile requires Enterprise; use openai/gpt-oss-120b instead.
+    groq_default_model: str = "openai/gpt-oss-120b"
     ai_provider: str = "groq"
     ai_max_retries: int = 2
     ai_request_timeout: int = 60
 
-    # Supported Groq models (as of July 2026)
+    # Optional additional AI provider keys (empty string = provider not configured)
+    openai_api_key: str = ""
+    google_api_key: str = ""
+
+    # Groq models available on the Developer plan (verified September 2026).
+    # Enterprise-only models (llama-3.3-70b-versatile, llama-3.1-8b-instant)
+    # are intentionally excluded to prevent 404 errors on standard accounts.
     groq_supported_models: List[str] = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3.6-27b",
-        "gemma2-9b-it",
+        "openai/gpt-oss-120b",   # 120B params, 500 t/s, $0.15/$0.60 per 1M
+        "openai/gpt-oss-20b",    # 20B params,  1000 t/s, $0.075/$0.30 per 1M
+        "qwen/qwen3.8-27b",      # Qwen 3.8 27B, 450 t/s, $0.80/$4.00 per 1M
+    ]
+
+    # Supported OpenAI models (only populated when OPENAI_API_KEY is set)
+    openai_supported_models: List[str] = [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-3.5-turbo",
+    ]
+
+    # Supported Google Gemini models (only populated when GOOGLE_API_KEY is set)
+    google_supported_models: List[str] = [
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
     ]
 
     # ── OCR ──────────────────────────────────────────────────
@@ -99,7 +119,16 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> List[str]:
-        return [self.frontend_url]
+        origins = [self.frontend_url]
+        # In development, also allow IPv6 loopback variant
+        if self.app_env == "development":
+            port = self.frontend_url.split(":")[-1]
+            origins += [
+                f"http://localhost:{port}",
+                f"http://127.0.0.1:{port}",
+                f"http://[::1]:{port}",
+            ]
+        return list(dict.fromkeys(origins))  # deduplicate
 
     @property
     def is_production(self) -> bool:

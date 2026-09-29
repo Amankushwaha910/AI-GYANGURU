@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import CurrentUser
+from app.core.dependencies import CurrentUser, CurrentUserFast
 from app.schemas.common import APIResponse, PaginatedResponse
 from app.schemas.summary import (
     GenerateSummaryFromFileRequest,
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/summaries", tags=["Summaries"])
 @router.post("", response_model=APIResponse[SummaryResponse], status_code=201)
 async def generate_summary(
     request: GenerateSummaryRequest,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a summary for a topic using AI."""
@@ -39,7 +39,7 @@ async def generate_summary(
 @router.post("/from-file", response_model=APIResponse[SummaryResponse], status_code=201)
 async def generate_summary_from_file(
     request: GenerateSummaryFromFileRequest,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a summary from a previously uploaded file."""
@@ -53,7 +53,7 @@ async def generate_summary_from_file(
 
 @router.get("", response_model=PaginatedResponse[SummaryListItem])
 async def list_summaries(
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -79,7 +79,7 @@ async def list_summaries(
 @router.get("/{summary_id}", response_model=APIResponse[SummaryResponse])
 async def get_summary(
     summary_id: str,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific summary by ID."""
@@ -92,7 +92,7 @@ async def get_summary(
 @router.delete("/{summary_id}", response_model=APIResponse[None])
 async def delete_summary(
     summary_id: str,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a summary."""

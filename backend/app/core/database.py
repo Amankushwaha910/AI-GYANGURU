@@ -61,6 +61,37 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
+# ── AsyncSessionLocal alias ───────────────────────────────────────────────────
+# Used by background tasks (e.g. file_service._extract_text_background) that
+# need to open their own sessions outside the request/response cycle.
+# Calling AsyncSessionLocal() returns a new AsyncSession context manager.
+class _AsyncSessionLocalProxy:
+    """Proxy that lazily resolves the session factory on first call.
+
+    Supports two usage patterns used in background tasks:
+
+        # pattern 1 — direct callable returning a context manager
+        async with AsyncSessionLocal() as session: ...
+
+        # pattern 2 — direct context manager (legacy usage)
+        async with AsyncSessionLocal as session: ...
+    """
+    def __call__(self):
+        """Return a new AsyncSession context manager."""
+        return get_session_factory()()
+
+    async def __aenter__(self):
+        # support: async with AsyncSessionLocal as session
+        self._session = get_session_factory()()
+        return await self._session.__aenter__()
+
+    async def __aexit__(self, *args):
+        return await self._session.__aexit__(*args)
+
+
+AsyncSessionLocal = _AsyncSessionLocalProxy()
+
+
 # ── Convenience alias used by Alembic and tests ───────────────────────────────
 # Accessing this property triggers lazy init — fine for scripts that run their
 # own event loop.  In uvicorn, get_db() calls get_session_factory() instead.

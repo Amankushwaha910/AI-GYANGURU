@@ -8,10 +8,10 @@ import type {
 } from '$types';
 
 export const summariesApi = {
-	generate: (data: { topic: string; sections: SummarySection[]; model?: string }) =>
+	generate: (data: { topic: string; sections: SummarySection[]; model?: string; provider?: string }) =>
 		api.post<APIResponse<Summary>>('/summaries', data),
 
-	generateFromFile: (data: { upload_id: string; sections: SummarySection[]; model?: string }) =>
+	generateFromFile: (data: { upload_id: string; sections: SummarySection[]; model?: string; provider?: string }) =>
 		api.post<APIResponse<Summary>>('/summaries/from-file', data),
 
 	list: (params: { page?: number; page_size?: number; search?: string } = {}) => {

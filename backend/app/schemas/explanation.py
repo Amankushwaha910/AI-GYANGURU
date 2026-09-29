@@ -10,12 +10,14 @@ from pydantic import BaseModel, Field
 
 class GenerateExplanationRequest(BaseModel):
     topic: str = Field(..., min_length=2, max_length=500, description="Concept to explain")
-    model: Optional[str] = Field(None, description="AI model to use")
+    model: Optional[str] = Field(None, description="AI model ID")
+    provider: Optional[str] = Field(None, description="AI provider name")
 
 
 class GenerateExplanationFromFileRequest(BaseModel):
     upload_id: uuid.UUID = Field(..., description="ID of a previously uploaded file")
     model: Optional[str] = None
+    provider: Optional[str] = None
 
 
 class ExplanationContent(BaseModel):

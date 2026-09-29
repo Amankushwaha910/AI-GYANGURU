@@ -3,16 +3,24 @@
 	export let subtitle: string = '';
 </script>
 
+<!--
+  PageLayout — wraps every authenticated page.
+  Uses .page-container to cap content at 1280 px on wide screens,
+  while staying full-width on laptops and below.
+-->
 <div class="flex-1 overflow-y-auto">
 	{#if title}
-		<header class="px-8 py-6 border-b border-gray-100 dark:border-gray-800">
-			<h1 class="text-2xl font-bold text-gray-900 dark:text-white">{title}</h1>
-			{#if subtitle}
-				<p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{subtitle}</p>
-			{/if}
-		</header>
+		<div class="border-b border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-950">
+			<header class="page-container px-8 py-5">
+				<h1 class="page-title">{title}</h1>
+				{#if subtitle}
+					<p class="page-subtitle">{subtitle}</p>
+				{/if}
+			</header>
+		</div>
 	{/if}
-	<main class="px-8 py-6">
+
+	<main class="page-container px-8 py-7">
 		<slot />
 	</main>
 </div>

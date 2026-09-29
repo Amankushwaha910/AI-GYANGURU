@@ -29,6 +29,9 @@ node_modules/
 build/
 dist/
 *.tsbuildinfo
+# Vite-generated timestamp config files (created during dev server startup)
+vite.config.ts.timestamp-*.mjs
+vite.config.js.timestamp-*.mjs
 
 # ── IDE ────────────────────────────────────────────────────────
 .vscode/settings.json

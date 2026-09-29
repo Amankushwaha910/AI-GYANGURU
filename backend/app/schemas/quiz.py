@@ -16,6 +16,7 @@ class GenerateQuizRequest(BaseModel):
     difficulty: QuizDifficulty = Field(default=QuizDifficulty.mixed)
     category: Optional[str] = Field(None, max_length=200)
     model: Optional[str] = None
+    provider: Optional[str] = None
 
 
 class GenerateQuizFromFileRequest(BaseModel):
@@ -24,6 +25,7 @@ class GenerateQuizFromFileRequest(BaseModel):
     difficulty: QuizDifficulty = Field(default=QuizDifficulty.mixed)
     category: Optional[str] = Field(None, max_length=200)
     model: Optional[str] = None
+    provider: Optional[str] = None
 
 
 class QuizQuestionResponse(BaseModel):

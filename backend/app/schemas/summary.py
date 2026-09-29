@@ -32,7 +32,8 @@ class GenerateSummaryRequest(BaseModel):
         ],
         description="Which sections to include in the summary",
     )
-    model: Optional[str] = Field(None, description="AI model to use (defaults to system default)")
+    model: Optional[str] = Field(None, description="AI model ID (e.g. 'openai/gpt-oss-120b')")
+    provider: Optional[str] = Field(None, description="AI provider name (e.g. 'groq', 'openai', 'google')")
 
 
 class GenerateSummaryFromFileRequest(BaseModel):
@@ -46,6 +47,7 @@ class GenerateSummaryFromFileRequest(BaseModel):
         ],
     )
     model: Optional[str] = None
+    provider: Optional[str] = None
 
 
 class SummaryResponse(BaseModel):

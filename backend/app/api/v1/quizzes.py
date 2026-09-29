@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import CurrentUser
+from app.core.dependencies import CurrentUser, CurrentUserFast
 from app.schemas.common import APIResponse, PaginatedResponse
 from app.schemas.quiz import (
     GenerateQuizFromFileRequest,
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/quizzes", tags=["Quizzes"])
 @router.post("", response_model=APIResponse[QuizResponse], status_code=201)
 async def generate_quiz(
     request: GenerateQuizRequest,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a quiz for a topic using AI."""
@@ -68,7 +68,7 @@ async def generate_quiz(
 @router.post("/from-file", response_model=APIResponse[QuizResponse], status_code=201)
 async def generate_quiz_from_file(
     request: GenerateQuizFromFileRequest,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a quiz from a previously uploaded file."""
@@ -106,7 +106,7 @@ async def generate_quiz_from_file(
 
 @router.get("", response_model=PaginatedResponse[QuizListItem])
 async def list_quizzes(
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -132,7 +132,7 @@ async def list_quizzes(
 @router.get("/{quiz_id}", response_model=APIResponse[QuizResponse])
 async def get_quiz(
     quiz_id: UUID,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific quiz with questions (answers hidden)."""
@@ -170,7 +170,7 @@ async def get_quiz(
 async def submit_quiz(
     quiz_id: UUID,
     request: SubmitQuizRequest,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Submit quiz answers and receive scored results with explanations."""
@@ -183,7 +183,7 @@ async def submit_quiz(
 async def get_attempt(
     quiz_id: UUID,
     attempt_id: UUID,
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve a past quiz attempt with full question review."""
