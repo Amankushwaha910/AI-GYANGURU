@@ -41,7 +41,7 @@ class ExplanationResponse(BaseModel):
     is_from_file: bool
     created_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "protected_namespaces": ()}
 
 
 class ExplanationListItem(BaseModel):
