@@ -50,3 +50,11 @@ logs/
 
 # ── Docker ────────────────────────────────────────────────────
 docker-compose.override.yml
+
+# ── Supabase local dev ────────────────────────────────────────
+supabase/.temp/
+supabase/.branches/
+
+# ── Root-level package files (not part of the project) ────────
+/package.json
+/package-lock.json

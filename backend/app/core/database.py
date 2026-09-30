@@ -60,7 +60,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     assert _session_factory is not None
     return _session_factory
 
-
+ 
 # ── AsyncSessionLocal alias ───────────────────────────────────────────────────
 # Used by background tasks (e.g. file_service._extract_text_background) that
 # need to open their own sessions outside the request/response cycle.
