@@ -55,6 +55,7 @@ docker-compose.override.yml
 supabase/.temp/
 supabase/.branches/
 
-# ── Root-level package files (not part of the project) ────────
+# ── Root-level package files (Supabase CLI — not part of the app) ────
 /package.json
 /package-lock.json
+/node_modules/

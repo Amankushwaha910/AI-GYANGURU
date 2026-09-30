@@ -159,12 +159,12 @@ npm run build
 2. Create an API key
 3. Add to `GROQ_API_KEY` in `.env`
 
-**Supported Models:**
-- `llama3-70b-8192` (default, best quality)
-- `llama3-8b-8192` (faster)
-- `deepseek-r1-distill-llama-70b`
-- `gemma2-9b-it`
-- `mixtral-8x7b-32768`
+**Supported Models (Developer Plan):**
+- `openai/gpt-oss-120b` (default — best quality, 120B params)
+- `openai/gpt-oss-20b` (faster, lighter)
+- `qwen/qwen3.8-27b` (multilingual)
+
+> Note: `llama-3.3-70b-versatile` and `llama-3.1-8b-instant` require an Enterprise Groq account and will return 404 on standard Developer accounts.
 
 ---
 
@@ -204,7 +204,8 @@ Set `OCR_ENGINE=tesseract` and `TESSERACT_CMD=/path/to/tesseract` in `.env`
 ### AI requests failing
 - Verify Groq API key is valid
 - Check API quota: https://console.groq.com
-- Try a different model in `GROQ_DEFAULT_MODEL`
+- Use a Developer-plan model: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, or `qwen/qwen3.8-27b`
+- Enterprise-only models (`llama-3.3-70b-versatile`) will return 404 on standard accounts
 
 ### File uploads failing
 - Verify Supabase Storage bucket exists

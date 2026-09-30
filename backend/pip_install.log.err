@@ -1,4 +1,0 @@
-ERROR: Invalid requirement: 'GyanGuru\\backend\\requirements.txt': Expected semicolon (after name with no version specifier) or end
-    GyanGuru\backend\requirements.txt
-            ^
-Hint: It looks like a path. File 'GyanGuru\backend\requirements.txt' does not exist.
