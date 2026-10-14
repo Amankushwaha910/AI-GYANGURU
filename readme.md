@@ -194,8 +194,12 @@ cp .env.example .env
 alembic upgrade head
 
 # Start the development server
-python -m uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
+.\scripts\run_dev_backend.ps1
 ```
+
+The development launcher keeps console output and writes bounded request-timing
+logs to `backend/.runtime-logs/request-timing/` (2 MiB per file, three rotated
+backups). The log directory is excluded from Git.
 
 API docs: http://localhost:8000/docs
 

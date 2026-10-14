@@ -25,7 +25,9 @@
 	$: currentPath = $page.url.pathname;
 
 	async function handleLogout() {
-		try { await authApi.logout(); } catch {}
+		try { await authApi.logout(); } catch {
+			// Local logout below still clears this browser's session.
+		}
 		authStore.clearAuth();
 		toast.success('Logged out successfully');
 		goto('/login');

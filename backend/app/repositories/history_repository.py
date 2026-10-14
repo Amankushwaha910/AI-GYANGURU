@@ -30,17 +30,33 @@ class HistoryRepository(BaseRepository[HistoryItem]):
         if search:
             query = query.where(HistoryItem.topic.ilike(f"%{search}%"))
 
+        # Return the filtered total alongside page rows without a second
+        # pooler round trip. An empty/out-of-range page has no window value,
+        # so preserve exact pagination semantics with the count fallback.
+        page_query = query.add_columns(func.count().over().label("total"))
+        page_query = page_query.order_by(HistoryItem.created_at.desc())
+        page_query = page_query.limit(page_size).offset((page - 1) * page_size)
+
+        rows = (await self.db.execute(page_query)).all()
+        if rows:
+            return [row[0] for row in rows], rows[0][1]
+
         total = (
             await self.db.execute(
                 select(func.count()).select_from(query.subquery())
             )
         ).scalar_one()
+        return [], total
 
-        query = query.order_by(HistoryItem.created_at.desc())
-        query = query.limit(page_size).offset((page - 1) * page_size)
-
-        result = await self.db.execute(query)
-        return list(result.scalars().all()), total
+    async def get_recent_user_history(self, user_id: UUID, limit: int = 10) -> List[HistoryItem]:
+        """Fetch recent activity without the total-count query used by paginated history."""
+        result = await self.db.execute(
+            select(HistoryItem)
+            .where(HistoryItem.user_id == user_id)
+            .order_by(HistoryItem.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
     async def add_entry(
         self,
@@ -49,7 +65,7 @@ class HistoryRepository(BaseRepository[HistoryItem]):
         topic: str,
         resource_id: str,
     ) -> HistoryItem:
-        return await self.create(
+        return await self.create_without_refresh(
             user_id=user_id,
             item_type=item_type,
             topic=topic,

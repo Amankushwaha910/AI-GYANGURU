@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -20,8 +21,10 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from app.core.config import settings
 
@@ -38,12 +41,74 @@ def get_engine() -> AsyncEngine:
     """Return (creating if necessary) the shared async engine."""
     global _engine, _session_factory
     if _engine is None:
+        database_url = make_url(settings.database_url)
+        engine_options = {"echo": settings.app_debug}
+        if settings.database_pool_mode == "session":
+            # Supabase session mode (port 5432) pins a server connection for
+            # each client connection, so a small application pool can safely
+            # reuse asyncpg prepared statements between requests.
+            engine_options.update(
+                poolclass=AsyncAdaptedQueuePool,
+                pool_size=settings.database_pool_size,
+                max_overflow=settings.database_max_overflow,
+                pool_timeout=settings.database_pool_timeout_seconds,
+                pool_recycle=settings.database_pool_recycle_seconds,
+                # Per-checkout ping costs a database round trip; aged sockets
+                # are recycled and failed connections are invalidated by SQLAlchemy.
+                pool_pre_ping=False,
+            )
+            connect_args = {}
+        else:
+            # Transaction poolers reuse backend sessions. Disable both caches
+            # and use unique names to avoid collisions across client connections.
+            database_url = database_url.update_query_dict(
+                {"prepared_statement_cache_size": "0"}
+            )
+            engine_options["poolclass"] = NullPool
+            connect_args = {
+                "statement_cache_size": 0,
+                "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4().hex}__",
+            }
         _engine = create_async_engine(
-            settings.database_url,
-            poolclass=NullPool,                        # PgBouncer manages the pool
-            echo=settings.app_debug,                   # SQL logging in debug mode
-            connect_args={"statement_cache_size": 0},  # Required for PgBouncer tx mode
+            database_url,
+            connect_args=connect_args,
+            **engine_options,
         )
+        from app.core.performance import (
+            finish_failed_query,
+            finish_query,
+            measure_driver_connect,
+            start_query,
+        )
+
+        def timed_driver_connect(dialect, connection_record, cargs, cparams):
+            # SQLAlchemy documents do_connect as a supported connection override.
+            # Calling the same dialect.connect function with the unchanged
+            # arguments preserves the default asyncpg path while timing success
+            # and failure in the same event context as the request timings.
+            return measure_driver_connect(
+                lambda: dialect.connect(*cargs, **cparams)
+            )
+
+        def before_query(conn, cursor, statement, parameters, context, executemany):
+            conn.info["gyanguru_query_started"] = start_query()
+
+        def after_query(conn, cursor, statement, parameters, context, executemany):
+            started = conn.info.pop("gyanguru_query_started", None)
+            if started is not None:
+                finish_query(started, statement)
+
+        def query_error(exception_context):
+            # Do not include exception text or bound parameters in diagnostics.
+            finish_failed_query(
+                getattr(exception_context, "connection", None),
+                getattr(exception_context, "statement", None),
+            )
+
+        event.listen(_engine.sync_engine, "before_cursor_execute", before_query)
+        event.listen(_engine.sync_engine, "after_cursor_execute", after_query)
+        event.listen(_engine.sync_engine, "handle_error", query_error)
+        event.listen(_engine.sync_engine, "do_connect", timed_driver_connect)
         _session_factory = async_sessionmaker(
             _engine,
             class_=AsyncSession,
@@ -52,6 +117,16 @@ def get_engine() -> AsyncEngine:
             autocommit=False,
         )
     return _engine
+
+
+async def dispose_engine() -> None:
+    """Close pooled connections cleanly during application shutdown."""
+    global _engine, _session_factory
+    engine = _engine
+    _engine = None
+    _session_factory = None
+    if engine is not None:
+        await engine.dispose()
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -115,10 +190,41 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     factory = get_session_factory()
     async with factory() as session:
         try:
+            from app.core.performance import (
+                add_timing,
+                begin_connection_acquisition,
+                finish_connection_acquisition,
+            )
+
+            connect_started, acquisition_token = begin_connection_acquisition()
+            try:
+                await session.connection()
+            finally:
+                finish_connection_acquisition(connect_started, acquisition_token)
             yield session
-            await session.commit()
+            from time import perf_counter
+
+            commit_started = perf_counter()
+            try:
+                await session.commit()
+            finally:
+                add_timing("db_commit", (perf_counter() - commit_started) * 1000)
         except Exception:
-            await session.rollback()
+            from time import perf_counter
+            from app.core.performance import add_timing
+
+            rollback_started = perf_counter()
+            try:
+                await session.rollback()
+            finally:
+                add_timing("db_rollback", (perf_counter() - rollback_started) * 1000)
             raise
         finally:
-            await session.close()
+            from time import perf_counter
+            from app.core.performance import add_timing
+
+            release_started = perf_counter()
+            try:
+                await session.close()
+            finally:
+                add_timing("db_release", (perf_counter() - release_started) * 1000)

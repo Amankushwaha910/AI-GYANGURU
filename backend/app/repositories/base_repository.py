@@ -42,6 +42,18 @@ class BaseRepository(Generic[ModelType]):
         await self.db.refresh(instance)
         return instance
 
+    async def create_without_refresh(self, **kwargs) -> ModelType:
+        """Insert an instance without issuing a follow-up refresh SELECT.
+
+        SQLAlchemy's INSERT RETURNING populates primary keys and server defaults
+        for the PostgreSQL models that opt into this path. Keep ``create`` for
+        callers that require an explicit database refresh.
+        """
+        instance = self.model(**kwargs)
+        self.db.add(instance)
+        await self.db.flush()
+        return instance
+
     async def update(self, instance: ModelType, **kwargs) -> ModelType:
         for key, value in kwargs.items():
             setattr(instance, key, value)

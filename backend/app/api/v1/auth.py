@@ -77,6 +77,8 @@ async def google_oauth(
     """
     # In production, the code is exchanged via Supabase Auth
     # Here we accept the decoded user info from the frontend (Supabase handles the OAuth flow)
+    # Release the authentication/session connection before the Google request.
+    await db.commit()
     import httpx
     async with httpx.AsyncClient() as client:
         response = await client.get(

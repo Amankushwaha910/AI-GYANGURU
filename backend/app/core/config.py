@@ -5,8 +5,9 @@ All secrets are loaded from environment variables — never hardcoded.
 from functools import lru_cache
 from typing import List, Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -27,8 +28,11 @@ class Settings(BaseSettings):
 
     # ── Database ─────────────────────────────────────────────
     database_url: str
-    database_pool_size: int = 10
-    database_max_overflow: int = 20
+    database_pool_mode: Literal["transaction", "session"] = "transaction"
+    database_pool_size: int = Field(default=2, ge=1, le=100)
+    database_max_overflow: int = Field(default=0, ge=0, le=100)
+    database_pool_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    database_pool_recycle_seconds: int = Field(default=900, ge=60, le=3600)
 
     # ── Supabase ─────────────────────────────────────────────
     supabase_url: str
@@ -108,6 +112,21 @@ class Settings(BaseSettings):
         if not v.startswith("postgresql"):
             raise ValueError("DATABASE_URL must be a PostgreSQL connection string")
         return v
+
+    @model_validator(mode="after")
+    def validate_database_pool_mode(self) -> "Settings":
+        if self.database_pool_mode == "session" and make_url(self.database_url).port != 5432:
+            raise ValueError(
+                "DATABASE_POOL_MODE=session requires a session-mode PostgreSQL URL on port 5432"
+            )
+        if self.database_pool_mode == "session" and (
+            self.database_pool_size > 2 or self.database_max_overflow != 0
+        ):
+            raise ValueError(
+                "Session mode currently requires DATABASE_POOL_SIZE<=2 and DATABASE_MAX_OVERFLOW=0; "
+                "increase only after accounting for every application worker and the database connection limit"
+            )
+        return self
 
     @property
     def allowed_extensions_list(self) -> List[str]:

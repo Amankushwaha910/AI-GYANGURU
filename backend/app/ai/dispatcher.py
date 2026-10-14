@@ -18,6 +18,7 @@ from functools import lru_cache
 from app.ai.base import AIMessage, AIResponse, AIStreamChunk, BaseAIProvider
 from app.core.config import settings
 from app.core.exceptions import AIProviderError
+from app.core.performance import add_timing
 
 # Map of provider name → (module path, class name)
 _PROVIDER_REGISTRY: Dict[str, Tuple[str, str]] = {
@@ -33,6 +34,40 @@ def _provider_model_map() -> Dict[str, List[str]]:
         "openai": settings.openai_supported_models,
         "google": settings.google_supported_models,
     }
+
+
+def _is_retryable_provider_error(error: AIProviderError) -> bool:
+    """Retry only recognized transient provider/network failures."""
+    cause = error.__cause__
+    while cause is not None:
+        status = getattr(cause, "status_code", None)
+        if status is None:
+            response = getattr(cause, "response", None)
+            status = getattr(response, "status_code", None)
+        if status is None:
+            status = getattr(cause, "code", None)
+
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            status = None
+
+        if status is not None:
+            return status in (408, 429) or status >= 500
+
+        error_name = type(cause).__name__.lower()
+        if any(
+            name in error_name
+            for name in (
+                "timeout", "connection", "network", "ratelimit",
+                "resourceexhausted", "serviceunavailable",
+                "deadlineexceeded", "internalservererror",
+            )
+        ):
+            return True
+        cause = cause.__cause__
+
+    return False
 
 
 class AIDispatcher:
@@ -111,18 +146,27 @@ class AIDispatcher:
 
         # Handle "provider:model" shorthand
         if model and ":" in model:
-            parts = model.split(":", 1)
-            provider = provider or parts[0]
-            model = parts[1]
+            requested_provider, requested_model = model.split(":", 1)
+            if provider and provider != requested_provider:
+                raise AIProviderError(
+                    f"Model '{model}' conflicts with provider '{provider}'."
+                )
+            if not requested_model:
+                raise AIProviderError("A model ID is required after the provider prefix.")
+            provider = provider or requested_provider
+            model = requested_model
 
         # If provider is explicit, just validate/resolve the model for it
         if provider:
             if provider not in model_map:
                 raise AIProviderError(f"Unknown provider '{provider}'.")
             models = model_map[provider]
-            if model and model in models:
+            if model:
+                if model not in models:
+                    raise AIProviderError(
+                        f"Model '{model}' is not available for provider '{provider}'."
+                    )
                 return provider, model
-            # model not specified or not valid for provider — use provider's default
             if models:
                 return provider, models[0]
             raise AIProviderError(f"Provider '{provider}' has no configured models.")
@@ -178,8 +222,8 @@ class AIDispatcher:
         last_error: Optional[Exception] = None
 
         for attempt in range(settings.ai_max_retries + 1):
+            start = time.monotonic()
             try:
-                start = time.monotonic()
                 response = await ai_provider.complete(
                     messages=messages,
                     model=resolved_model,
@@ -187,9 +231,17 @@ class AIDispatcher:
                     max_tokens=max_tokens,
                 )
                 latency_ms = (time.monotonic() - start) * 1000
+                add_timing("ai", latency_ms)
+                import logging
+                logging.getLogger("gyanguru.ai").info(
+                    "completion provider=%s model=%s attempt=%d latency_ms=%.1f",
+                    resolved_provider, resolved_model, attempt + 1, latency_ms,
+                )
                 return response, latency_ms
 
             except AIProviderError as exc:
+                latency_ms = (time.monotonic() - start) * 1000
+                add_timing("ai", latency_ms)
                 last_error = exc
                 err_str = str(exc).lower()
 
@@ -202,7 +254,17 @@ class AIDispatcher:
                         f"Please select a different model from the AI Model selector."
                     ) from exc
 
+                # Authentication, validation, permission and other unclassified
+                # failures are permanent for this request; do not retry them.
+                if not _is_retryable_provider_error(exc):
+                    raise
+
                 if attempt < settings.ai_max_retries:
+                    import logging
+                    logging.getLogger("gyanguru.ai").warning(
+                        "completion retry provider=%s model=%s attempt=%d latency_ms=%.1f error_type=%s",
+                        resolved_provider, resolved_model, attempt + 1, latency_ms, type(exc).__name__,
+                    )
                     import asyncio
                     await asyncio.sleep(2 ** attempt)
                 continue

@@ -48,9 +48,14 @@ alembic upgrade head
 ```
 
 ### 4. Run Backend
-```bash
-uvicorn app.main:app --reload --port 8000
+```powershell
+.\scripts\run_dev_backend.ps1
 ```
+
+This development launcher preserves Uvicorn console output and writes bounded
+request-timing logs under `backend/.runtime-logs/request-timing/` (2 MiB per
+file, three rotated backups). The directory is excluded from Git. Production
+deployments should continue using their configured log collector.
 
 Backend will be available at `http://localhost:8000`
 - Swagger docs: `http://localhost:8000/docs`
@@ -307,7 +312,7 @@ Set `OCR_ENGINE=tesseract` and `TESSERACT_CMD=/path/to/tesseract` in `.env`
 2. **Get Groq API key** from console.groq.com
 3. **Configure environment files** (`.env` for both backend and frontend)
 4. **Run database migrations** with Alembic
-5. **Start backend** with `uvicorn app.main:app --reload`
+5. **Start backend** from PowerShell in `backend` with `.\scripts\run_dev_backend.ps1`
 6. **Start frontend** with `npm run dev`
 7. **Create a user account** and start testing!
 

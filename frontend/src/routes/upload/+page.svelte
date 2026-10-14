@@ -1,15 +1,20 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { filesApi } from '$api/files';
+	import {
+		applyPollFailure,
+		createPollBatchRunner,
+		isUploadInProgress,
+		stopPollingForStatus
+	} from '$lib/upload/polling';
 	import { toast } from '$stores/toast';
 	import type { Upload } from '$types';
-	import { formatFileSize, formatRelativeTime } from '$lib/utils';
+	import { formatFileSize } from '$lib/utils';
 	import Button from '$components/ui/Button.svelte';
-	import Card from '$components/ui/Card.svelte';
 	import Skeleton from '$components/ui/Skeleton.svelte';
-	import Badge from '$components/ui/Badge.svelte';
 	import EmptyState from '$components/ui/EmptyState.svelte';
 	import PageLayout from '$components/layout/PageLayout.svelte';
+	import type { ComponentType } from 'svelte';
 	import {
 		Upload as UploadIcon, FileText, Image, Trash2,
 		CheckCircle, Clock, AlertCircle, Loader, RefreshCw
@@ -25,12 +30,20 @@
 	// IDs of uploads currently being polled (pending or processing)
 	let pollingIds = new Set<string>();
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let pollErrors: Record<string, string> = {};
+	const pollFailures = new Map<string, number>();
+	const pollBatch = createPollBatchRunner();
+	let destroyed = false;
 
 	const ALLOWED = ['pdf', 'docx', 'txt', 'png', 'jpg', 'jpeg', 'webp'];
 	const POLL_INTERVAL_MS = 3000; // poll every 3 s (was 2.5 s)
 
 	onMount(() => loadUploads());
-	onDestroy(() => stopPolling());
+	onDestroy(() => {
+		destroyed = true;
+		stopPolling();
+		pollBatch.destroy();
+	});
 
 	// ── Data loading ────────────────────────────────────────────────────────────
 
@@ -41,8 +54,8 @@
 			uploads = res.data;
 			// Start polling any in-progress uploads from previous sessions
 			startPollingForInProgress();
-		} catch (e: any) {
-			toast.error('Failed to load uploads: ' + (e?.message ?? 'Unknown error'));
+		} catch (e: unknown) {
+			toast.error('Failed to load uploads: ' + (e instanceof Error ? e.message : 'Unknown error'));
 		} finally {
 			loading = false;
 		}
@@ -52,12 +65,17 @@
 
 	function startPollingForInProgress() {
 		const inProgress = uploads
-			.filter(u => u.status === 'pending' || u.status === 'processing')
+			.filter(u => isUploadInProgress(u.status))
 			.map(u => u.id);
 
 		if (inProgress.length === 0) return;
 
-		inProgress.forEach(id => pollingIds.add(id));
+		inProgress.forEach((id) => {
+			pollFailures.delete(id);
+			pollErrors = Object.fromEntries(Object.entries(pollErrors).filter(([key]) => key !== id));
+			pollingIds.add(id);
+		});
+		pollingIds = new Set(pollingIds);
 		ensurePollTimer();
 	}
 
@@ -72,33 +90,45 @@
 			pollTimer = null;
 		}
 		pollingIds.clear();
+		pollingIds = new Set(pollingIds);
 	}
 
 	async function pollInProgress() {
+		if (destroyed) return;
 		if (pollingIds.size === 0) {
 			stopPolling();
 			return;
 		}
 
 		const ids = [...pollingIds];
-		const results = await Promise.allSettled(
-			ids.map(id => filesApi.get(id))
-		);
+		const results = await pollBatch.run(ids, (id, signal) => filesApi.get(id, signal));
+		if (!results || destroyed) return;
 
-		results.forEach((result, i) => {
-			const id = ids[i];
-			if (result.status !== 'fulfilled') return;
+		results.forEach(({ id, result }) => {
+			if (destroyed || !pollingIds.has(id)) return;
+			if (result.status === 'rejected') {
+				const failure = applyPollFailure(id, result.reason, pollFailures, pollingIds);
+				pollErrors = { ...pollErrors, [id]: failure.message };
+				if (failure.stop) {
+					toast.error(failure.message);
+				}
+				return;
+			}
 
 			const updated = result.value.data;
 			if (!updated) return;
+			pollFailures.delete(id);
+			if (pollErrors[id]) {
+				const nextErrors = { ...pollErrors };
+				delete nextErrors[id];
+				pollErrors = nextErrors;
+			}
 
 			// Update the upload in the list
 			uploads = uploads.map(u => (u.id === id ? { ...u, ...updated } : u));
 
 			// If no longer in-progress, stop polling this ID
-			if (updated.status !== 'pending' && updated.status !== 'processing') {
-				pollingIds.delete(id);
-
+			if (stopPollingForStatus(id, updated.status, pollingIds)) {
 				if (updated.status === 'completed') {
 					toast.success(`"${updated.original_filename}" is ready to use!`);
 				} else if (updated.status === 'failed') {
@@ -114,6 +144,17 @@
 		pollingIds = new Set(pollingIds);
 
 		if (pollingIds.size === 0) stopPolling();
+	}
+
+	function retryPolling(id: string) {
+		pollFailures.delete(id);
+		const nextErrors = { ...pollErrors };
+		delete nextErrors[id];
+		pollErrors = nextErrors;
+		pollingIds.add(id);
+		pollingIds = new Set(pollingIds);
+		ensurePollTimer();
+		void pollInProgress();
 	}
 
 	// ── Upload ──────────────────────────────────────────────────────────────────
@@ -141,10 +182,11 @@
 				toast.success(`"${file.name}" uploaded — extracting content…`);
 				// Start polling immediately for this new upload
 				pollingIds.add(res.data.id);
+				pollingIds = new Set(pollingIds);
 				ensurePollTimer();
 			}
-		} catch (e: any) {
-			const msg = e?.message ?? 'Upload failed';
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : 'Upload failed';
 			toast.error(msg);
 		} finally {
 			uploading = false;
@@ -172,6 +214,8 @@
 			await filesApi.delete(id);
 			uploads = uploads.filter(u => u.id !== id);
 			pollingIds.delete(id);
+			pollBatch.abort(id);
+			pollingIds = new Set(pollingIds);
 			toast.success('File deleted');
 		} catch {
 			toast.error('Failed to delete file');
@@ -182,7 +226,7 @@
 
 	// ── Status display ──────────────────────────────────────────────────────────
 
-	const statusConfig: Record<string, { icon: any; color: string; bg: string; label: string; spin?: boolean }> = {
+	const statusConfig: Record<string, { icon: ComponentType; color: string; bg: string; label: string; spin?: boolean }> = {
 		completed: {
 			icon: CheckCircle,
 			color: 'text-green-600 dark:text-green-400',
@@ -211,7 +255,7 @@
 		}
 	};
 
-	const fileIcons: Record<string, any> = {
+	const fileIcons: Record<string, ComponentType> = {
 		pdf: FileText, docx: FileText, txt: FileText,
 		png: Image, jpg: Image, jpeg: Image, webp: Image
 	};
@@ -404,7 +448,18 @@
 						</div>
 
 						<!-- Progress bar -->
-						{#if isInProgress}
+						{#if pollErrors[upload.id]}
+							<div role="alert" class="mx-4 mb-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2">
+								<p class="text-xs text-amber-700 dark:text-amber-300 leading-snug">{pollErrors[upload.id]}</p>
+								<button
+									type="button"
+									class="mt-1 text-xs font-medium underline text-amber-700 dark:text-amber-300"
+									on:click={() => retryPolling(upload.id)}
+								>
+									Retry status check
+								</button>
+							</div>
+						{:else if isInProgress}
 							<div class="px-4 pb-3">
 								<div class="flex items-center gap-2">
 									<div class="flex-1 h-1.5 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">

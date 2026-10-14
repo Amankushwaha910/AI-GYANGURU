@@ -5,7 +5,7 @@
  */
 import { browser } from '$app/environment';
 import { writable, derived, get } from 'svelte/store';
-import type { SelectedModel, AIModelsResponse, AIProviderInfo } from '$types';
+import type { APIResponse, SelectedModel, AIModelsResponse, AIProviderInfo } from '$types';
 
 const STORAGE_KEY = 'gyanguru_selected_model';
 
@@ -34,7 +34,7 @@ interface ModelSelectorState {
 
 function createModelSelectorStore() {
 	const stored = loadFromStorage();
-	const { subscribe, set, update } = writable<ModelSelectorState>({
+	const { subscribe, update } = writable<ModelSelectorState>({
 		selected: stored,
 		providers: [],
 		loading: false,
@@ -45,11 +45,12 @@ function createModelSelectorStore() {
 		subscribe,
 
 		/** Load available models from the backend /models endpoint. */
-		async load(modelsApi: { list: () => Promise<any> }) {
+		async load(modelsApi: { list: () => Promise<APIResponse<AIModelsResponse>> }) {
 			update((s) => ({ ...s, loading: true, error: '' }));
 			try {
 				const res = await modelsApi.list();
-				const data: AIModelsResponse = res.data;
+				if (!res.data) throw new Error('The model list response was empty');
+				const data = res.data;
 
 				update((s) => {
 					// If no model is selected yet, pick the backend default
@@ -74,11 +75,11 @@ function createModelSelectorStore() {
 					}
 					return { ...s, providers: data.providers, selected, loading: false };
 				});
-			} catch (e: any) {
+			} catch (e: unknown) {
 				update((s) => ({
 					...s,
 					loading: false,
-					error: e?.message ?? 'Failed to load AI models',
+					error: e instanceof Error ? e.message : 'Failed to load AI models',
 				}));
 			}
 		},

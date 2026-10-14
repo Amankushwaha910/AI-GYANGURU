@@ -4,7 +4,6 @@
 	import { toast } from '$stores/toast';
 	import { authApi } from '$api/auth';
 	import { ApiClientError } from '$api/client';
-	import Button from '$components/ui/Button.svelte';
 	import Input from '$components/ui/Input.svelte';
 	import { GraduationCap } from 'lucide-svelte';
 
@@ -29,14 +28,20 @@
 		if (!email) { errors.email    = 'Email is required'; return; }
 
 		loading = true;
+		const flowStarted = performance.now();
 		try {
 			const res = await authApi.register({ email, password, full_name: fullName });
 			if (res.data) {
+				// Registration returns the new user with the token pair. Avoid a
+				// follow-up /auth/me request; the layout retains refresh recovery.
+				if (!res.data.user) {
+					throw new ApiClientError('AUTH_RESPONSE_INVALID', 'Registration response did not include account details. Please try again.', 500);
+				}
 				authStore.setTokens(res.data.access_token, res.data.refresh_token);
-				const meRes = await authApi.me();
-				if (meRes.data) authStore.setUser(meRes.data);
+				authStore.setUser(res.data.user);
 				toast.success('Account created! Welcome to AI GyanGuru.');
-				goto('/dashboard');
+				await goto('/dashboard');
+				console.debug(`[auth flow timing] signup to dashboard navigation: ${(performance.now() - flowStarted).toFixed(0)} ms`);
 			}
 		} catch (err) {
 			if (err instanceof ApiClientError) {
@@ -60,16 +65,24 @@
 	const strengthColors = ['', 'bg-red-400', 'bg-amber-400', 'bg-blue-400', 'bg-green-500'];
 	const strengthLabels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
 
-	const floatIcons = [
-		{ emoji: '📚', top: '12%', left: '14%', delay: '0s',    dur: '3.8s' },
-		{ emoji: '🎯', top: '8%',  left: '58%', delay: '0.7s',  dur: '4.2s' },
-		{ emoji: '💡', top: '28%', left: '80%', delay: '1.3s',  dur: '3.6s' },
-		{ emoji: '✏️', top: '60%', left: '84%', delay: '0.4s',  dur: '4.0s' },
-		{ emoji: '🔬', top: '80%', left: '68%', delay: '1.0s',  dur: '3.7s' },
-		{ emoji: '🏆', top: '84%', left: '22%', delay: '0.6s',  dur: '4.3s' },
-		{ emoji: '📊', top: '68%', left: '8%',  delay: '1.5s',  dur: '3.5s' },
-		{ emoji: '⚡', top: '36%', left: '4%',  delay: '0.2s',  dur: '4.1s' },
-	];
+	const iconEmojis = ['📚', '🎯', '💡', '✏️', '🔬', '🏆', '📊', '⚡'];
+	const iconDelays = ['0s', '0.7s', '1.3s', '0.4s', '1.0s', '0.6s', '1.5s', '0.2s'];
+	const iconDurs   = ['3.8s', '4.2s', '3.6s', '4.0s', '3.7s', '4.3s', '3.5s', '4.1s'];
+
+	const RADIUS_PCT = 37;
+	const N = iconEmojis.length;
+
+	const floatIcons = iconEmojis.map((emoji, i) => {
+		const angleDeg = -90 + i * (360 / N);
+		const angleRad = (angleDeg * Math.PI) / 180;
+		const leftPct  = 50 + RADIUS_PCT * Math.cos(angleRad);
+		const topPct   = 50 + RADIUS_PCT * Math.sin(angleRad);
+		return {
+			emoji,
+			style: `left:${leftPct.toFixed(3)}%; top:${topPct.toFixed(3)}%; transform:translate(-50%,-50%);
+			        animation: floatIcon ${iconDurs[i]} ease-in-out ${iconDelays[i]} infinite;`,
+		};
+	});
 </script>
 
 <svelte:head><title>Create Account — AI GyanGuru</title></svelte:head>
@@ -98,8 +111,7 @@
 		{#each floatIcons as icon}
 			<span
 				class="absolute text-2xl select-none pointer-events-none"
-				style="top:{icon.top}; left:{icon.left};
-				       animation: floatIcon {icon.dur} ease-in-out {icon.delay} infinite;"
+				style={icon.style}
 			>{icon.emoji}</span>
 		{/each}
 

@@ -2,6 +2,7 @@
 AI GyanGuru — FastAPI Application Entry Point
 """
 import logging
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,8 @@ from slowapi.util import get_remote_address
 
 from app.api.v1 import api_router
 from app.core.config import settings
+from app.core.database import dispose_engine
+from app.core.performance import begin_request, end_request, server_timing_header
 from app.core.exceptions import (
     AppException,
     app_exception_handler,
@@ -27,6 +30,31 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("gyanguru")
+
+
+def log_request_timing(
+    request_id: str,
+    method: str,
+    route: str,
+    status: int,
+    server_timing: str,
+) -> None:
+    """Log safe request correlation and timing metadata without request data."""
+    logger.info(
+        "request_id=%s method=%s route=%s status=%s server_timing=%s",
+        request_id,
+        method,
+        route,
+        status,
+        server_timing,
+    )
+
+
+def request_route_label(request: Request) -> str:
+    """Return a route template, never an unmatched caller-supplied URL path."""
+    route = request.scope.get("route")
+    return getattr(route, "path", None) or "<unmatched>"
+
 
 # ── Rate Limiter ──────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.rate_limit_general])
@@ -54,6 +82,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
+    expose_headers=["Server-Timing", "X-Request-ID"],
 )
 
 # Trusted hosts (production hardening)
@@ -67,16 +96,32 @@ if settings.is_production:
 # Security headers middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    if settings.is_production:
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=31536000; includeSubDomains"
+    started = time.perf_counter()
+    timing_token = begin_request()
+    try:
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        timing_value = server_timing_header(elapsed_ms)
+        response.headers["Server-Timing"] = timing_value
+        route = request_route_label(request)
+        log_request_timing(
+            getattr(request.state, "request_id", "-"),
+            request.method,
+            route,
+            response.status_code,
+            timing_value,
         )
-    return response
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if settings.is_production:
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
+            )
+        return response
+    finally:
+        end_request(timing_token)
 
 
 # Request ID middleware
@@ -127,3 +172,4 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("AI GyanGuru API shutting down...")
+    await dispose_engine()

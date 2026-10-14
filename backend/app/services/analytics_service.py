@@ -5,7 +5,6 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.analytics import EventType
 from app.repositories.analytics_repository import AnalyticsRepository
 from app.repositories.quiz_repository import QuizAttemptRepository
 from app.repositories.summary_repository import SummaryRepository
@@ -27,21 +26,9 @@ class AnalyticsService:
 
     async def get_dashboard(self, user_id: UUID) -> AnalyticsDashboard:
         """Compile the full analytics dashboard payload."""
-
-        # Summary stats
-        total_topics = await self.analytics_repo.count_unique_topics(user_id)
-        total_summaries = await self.analytics_repo.count_events_by_type(
-            user_id, EventType.summary_generated
-        )
-        total_explanations = await self.analytics_repo.count_events_by_type(
-            user_id, EventType.explanation_generated
-        )
-        total_quizzes = await self.analytics_repo.count_events_by_type(
-            user_id, EventType.quiz_completed
-        )
-
-        # Overall accuracy
-        category_stats = await self.quiz_attempt_repo.get_accuracy_by_category(user_id)
+        aggregates = await self.analytics_repo.get_dashboard_aggregates(user_id)
+        counts = aggregates["counts"]
+        category_stats = aggregates["category_stats"]
         overall_accuracy = 0.0
         if category_stats:
             total_correct = sum(c["correct"] for c in category_stats)
@@ -50,24 +37,22 @@ class AnalyticsService:
                 overall_accuracy = round((total_correct / total_answered) * 100, 1)
 
         summary = AnalyticsSummary(
-            total_topics_studied=total_topics,
-            total_summaries_generated=total_summaries,
-            total_explanations_generated=total_explanations,
-            total_quizzes_taken=total_quizzes,
+            total_topics_studied=counts["topics"],
+            total_summaries_generated=counts["summaries"],
+            total_explanations_generated=counts["explanations"],
+            total_quizzes_taken=counts["quizzes"],
             overall_quiz_accuracy=overall_accuracy,
         )
 
-        # Daily activity (last 30 days)
-        raw_daily = await self.analytics_repo.get_daily_activity(user_id, days=30)
-        daily_activity = [DailyActivityItem(**d) for d in raw_daily]
-
-        # Quiz accuracy trend (last 30 days) — simplified: use attempt percentage per day
-        raw_accuracy = await self._get_daily_quiz_accuracy(user_id, days=30)
-        quiz_accuracy_trend = [DailyActivityItem(**d) for d in raw_accuracy]
-
-        # Activity heatmap (last 90 days)
-        raw_heatmap = await self.analytics_repo.get_activity_heatmap(user_id, days=90)
-        activity_heatmap = [DailyActivityItem(**d) for d in raw_heatmap]
+        daily_activity = [
+            DailyActivityItem(**item) for item in aggregates["daily_activity"]
+        ]
+        quiz_accuracy_trend = [
+            DailyActivityItem(**item) for item in aggregates["quiz_accuracy_trend"]
+        ]
+        activity_heatmap = [
+            DailyActivityItem(**item) for item in aggregates["activity_heatmap"]
+        ]
 
         # Weak / strong areas
         sorted_cats = sorted(category_stats, key=lambda x: x["accuracy"])
@@ -97,24 +82,26 @@ class AnalyticsService:
             strong_areas=strong_areas,
         )
 
-    async def _get_daily_quiz_accuracy(self, user_id: UUID, days: int) -> list[dict]:
-        """Get average quiz accuracy per day."""
-        from datetime import datetime, timedelta, timezone
-        from sqlalchemy import cast, Date, func, select
-        from app.models.quiz import QuizAttempt
-
-        since = datetime.now(timezone.utc) - timedelta(days=days)
-        result = await self.db.execute(
-            select(
-                cast(QuizAttempt.created_at, Date).label("date"),
-                func.avg(QuizAttempt.percentage).label("count"),
-            )
-            .where(QuizAttempt.user_id == user_id)
-            .where(QuizAttempt.created_at >= since)
-            .group_by("date")
-            .order_by("date")
+    async def get_home_dashboard(self, user_id: UUID):
+        """Build only the data shown on the home page, skipping analytics-only data."""
+        counts, raw_activity = await self.analytics_repo.get_home_counts_and_activity(
+            user_id, days=7
         )
-        return [
-            {"date": str(row.date), "count": round(float(row.count or 0), 1)}
-            for row in result.all()
-        ]
+        total_answered, total_correct, raw_accuracy = (
+            await self.quiz_attempt_repo.get_home_accuracy_and_trend(user_id, days=7)
+        )
+        accuracy = (
+            round((total_correct / total_answered) * 100, 1)
+            if total_answered
+            else 0.0
+        )
+        summary = AnalyticsSummary(
+            total_topics_studied=counts["topics"],
+            total_summaries_generated=counts["summaries"],
+            total_explanations_generated=counts["explanations"],
+            total_quizzes_taken=counts["quizzes"],
+            overall_quiz_accuracy=accuracy,
+        )
+        weekly_activity = [DailyActivityItem(**d) for d in raw_activity]
+        weekly_accuracy = [DailyActivityItem(**d) for d in raw_accuracy]
+        return summary, weekly_activity, weekly_accuracy

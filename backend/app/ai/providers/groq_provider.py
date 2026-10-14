@@ -22,6 +22,9 @@ class GroqProvider(BaseAIProvider):
         self._client = AsyncGroq(
             api_key=settings.groq_api_key,
             timeout=settings.ai_request_timeout,
+            # The dispatcher owns bounded retries; avoid multiplying them with
+            # the SDK's own default retries.
+            max_retries=0,
         )
 
     def get_provider_name(self) -> str:

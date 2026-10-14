@@ -1,8 +1,10 @@
 """
 File service — upload, validation, text extraction, OCR pipeline.
 """
+import asyncio
 import io
 import logging
+import math
 import mimetypes
 from typing import Optional, Tuple
 from uuid import UUID
@@ -27,6 +29,13 @@ logger = logging.getLogger("gyanguru.file_service")
 # Maximum characters sent to AI to avoid token-limit issues.
 # Roughly 6 000 words / ~8 000 tokens — well within every supported model.
 MAX_EXTRACTED_CHARS = 24_000
+
+# Scanned PDFs are rendered one page at a time. Cap each RGB raster at roughly
+# 36 MiB and cap concurrent PDF OCR jobs so background uploads cannot create
+# an unbounded set of large page buffers.
+MAX_OCR_PAGE_PIXELS = 12_000_000
+MAX_CONCURRENT_PDF_OCR = 2
+_PDF_OCR_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_PDF_OCR)
 
 
 class FileService:
@@ -55,9 +64,7 @@ class FileService:
         5. Queue background text extraction
         6. Log analytics + history
         """
-        await self._validate_file(file)
-
-        content = await file.read()
+        content = await self._validate_file(file)
         filename = file.filename or "upload"
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         mime_type = (
@@ -66,6 +73,9 @@ class FileService:
             or "application/octet-stream"
         )
 
+        # Authentication has already read the user in this request. Release
+        # that read transaction before waiting on the remote storage service.
+        await self.db.commit()
         storage_path = await self.storage.upload(
             bucket=settings.supabase_storage_bucket,
             user_id=str(user_id),
@@ -73,42 +83,57 @@ class FileService:
             content=content,
             mime_type=mime_type,
         )
+        try:
+            upload = await self.upload_repo.create(
+                user_id=user_id,
+                original_filename=filename,
+                storage_path=storage_path,
+                file_type=ext,
+                mime_type=mime_type,
+                file_size_bytes=len(content),
+                status=UploadStatus.pending,
+            )
 
-        upload = await self.upload_repo.create(
-            user_id=user_id,
-            original_filename=filename,
-            storage_path=storage_path,
-            file_type=ext,
-            mime_type=mime_type,
-            file_size_bytes=len(content),
-            status=UploadStatus.pending,
-        )
-
-        # Queue text extraction — runs after HTTP response is sent.
-        # We pass only serialisable primitives (no ORM objects, no DB sessions).
-        background_tasks.add_task(
-            _extract_text_background,
-            upload_id=upload.id,
-            content=content,
-            file_type=ext,
-            mime_type=mime_type,
-        )
-
-        await self.analytics_repo.log_event(
-            user_id=user_id,
-            event_type=EventType.file_uploaded,
-            topic=filename,
-            module="file",
-            resource_id=str(upload.id),
-        )
-        await self.history_repo.add_entry(
-            user_id=user_id,
-            item_type=HistoryItemType.upload,
-            topic=filename,
-            resource_id=str(upload.id),
-        )
-
-        return upload
+            # Queue extraction only after DB and history work succeeds.
+            # Pass serialisable primitives, never ORM objects or DB sessions.
+            await self.analytics_repo.log_event(
+                user_id=user_id,
+                event_type=EventType.file_uploaded,
+                topic=filename,
+                module="file",
+                resource_id=str(upload.id),
+            )
+            await self.history_repo.add_entry(
+                user_id=user_id,
+                item_type=HistoryItemType.upload,
+                topic=filename,
+                resource_id=str(upload.id),
+            )
+            background_tasks.add_task(
+                _extract_text_background,
+                upload_id=upload.id,
+                content=content,
+                file_type=ext,
+                mime_type=mime_type,
+            )
+            return upload
+        except BaseException:
+            # DB writes are still in the request transaction. Roll them back
+            # and compensate for the already-created remote object.
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.error("file_service: DB rollback failed after upload persistence failure")
+            try:
+                await self.storage.delete(
+                    bucket=settings.supabase_storage_bucket,
+                    path=storage_path,
+                )
+            except Exception:
+                logger.error(
+                    "file_service: storage cleanup failed after upload persistence failure"
+                )
+            raise
 
     async def get_upload(self, user_id: UUID, upload_id: UUID) -> Upload:
         upload = await self.upload_repo.get_user_upload(user_id, upload_id)
@@ -125,18 +150,25 @@ class FileService:
         upload = await self.upload_repo.get_user_upload(user_id, upload_id)
         if not upload:
             raise NotFoundError("Upload", str(upload_id))
+        # Release the connection before making the remote storage request.
+        await self.db.commit()
         try:
             await self.storage.delete(
                 bucket=settings.supabase_storage_bucket,
                 path=upload.storage_path,
             )
-        except Exception:
-            pass  # Storage deletion failure should not block DB cleanup
+        except Exception as exc:
+            # Keep the DB row so the owner can retry; deleting it here would
+            # orphan a still-live object and make its storage path unrecoverable.
+            logger.warning("file_service: remote delete failed; retaining upload row")
+            raise FileProcessingError(
+                "The file could not be deleted from storage. Please try again."
+            ) from exc
         await self.upload_repo.delete(upload)
 
     # ── Validation ─────────────────────────────────────────────────────────────
 
-    async def _validate_file(self, file: UploadFile) -> None:
+    async def _validate_file(self, file: UploadFile) -> bytes:
         if not file.filename:
             raise ValidationError("File must have a filename")
 
@@ -147,13 +179,21 @@ class FileService:
                 f"Allowed: {', '.join(settings.allowed_extensions_list)}"
             )
 
-        content = await file.read()
-        await file.seek(0)
-
-        if len(content) > settings.max_file_size_bytes:
+        max_size = settings.max_file_size_bytes
+        declared_size = getattr(file, "size", None)
+        if declared_size is not None and declared_size > max_size:
             raise ValidationError(
                 f"File size exceeds maximum of {settings.max_file_size_mb} MB"
             )
+
+        # Bound the read even when UploadFile.size is unavailable or untrusted.
+        content = await file.read(max_size + 1)
+        if len(content) > max_size:
+            raise ValidationError(
+                f"File size exceeds maximum of {settings.max_file_size_mb} MB"
+            )
+        await file.seek(0)
+        return content
 
 
 # ── Background task (module-level, not a bound method) ────────────────────────
@@ -269,14 +309,16 @@ async def _extract_text(
     ocr_used = False
 
     if file_type == "pdf":
-        text = _extract_from_pdf(content)
+        # PyMuPDF parsing is synchronous and may be CPU-heavy for large files.
+        text = await asyncio.to_thread(_extract_from_pdf, content)
         if len(text.strip()) < 50:
             # PDF has no embedded text → try OCR on each page as image
             text = await _ocr_pdf_pages(content)
             ocr_used = True
 
     elif file_type == "docx":
-        text = _extract_from_docx(content)
+        # python-docx parsing is synchronous; keep it off the event loop.
+        text = await asyncio.to_thread(_extract_from_docx, content)
 
     elif file_type == "txt":
         text = content.decode("utf-8", errors="ignore")
@@ -319,21 +361,82 @@ async def _ocr_pdf_pages(content: bytes) -> str:
     Used when embedded text is absent (scanned/image PDFs).
     """
     try:
-        import fitz
-        doc = fitz.open(stream=content, filetype="pdf")
+        page_count = await asyncio.to_thread(_get_pdf_page_count, content)
         ocr_engine = get_ocr_engine()
         parts = []
-        for page in doc:
-            mat = fitz.Matrix(2, 2)  # 2× zoom for better OCR accuracy
-            pix = page.get_pixmap(matrix=mat)
-            img_bytes = pix.tobytes("png")
-            page_text = await ocr_engine.extract_from_image(img_bytes)
+        for page_number in range(page_count):
+            # Open/render/close the PDF wholly inside one worker call. PyMuPDF
+            # objects therefore never cross thread boundaries. Processing one
+            # page at a time bounds per-document memory; the semaphore caps
+            # concurrent page buffers across background uploads.
+            async with _PDF_OCR_SEMAPHORE:
+                img_bytes = await _await_task_to_finish(
+                    asyncio.create_task(
+                        asyncio.to_thread(_render_pdf_page, content, page_number)
+                    )
+                )
+                page_text = await _await_task_to_finish(
+                    asyncio.create_task(ocr_engine.extract_from_image(img_bytes))
+                )
             if page_text.strip():
                 parts.append(page_text.strip())
-        doc.close()
         return "\n".join(parts)
     except Exception as exc:
         raise FileProcessingError(f"PDF OCR failed: {exc}") from exc
+
+
+async def _await_task_to_finish(task: "asyncio.Task"):
+    """Hold bounded OCR resources until thread-backed work really finishes."""
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Cancelling asyncio.to_thread/run_in_executor does not stop its worker.
+        # Keep the semaphore slot until that worker releases its page buffer.
+        try:
+            await asyncio.shield(task)
+        except (asyncio.CancelledError, Exception):
+            pass
+        raise
+
+
+def _get_pdf_page_count(content: bytes) -> int:
+    """Read page count off-loop without retaining a PyMuPDF document."""
+    import fitz
+
+    doc = fitz.open(stream=content, filetype="pdf")
+    try:
+        return len(doc)
+    finally:
+        doc.close()
+
+
+def _pdf_render_zoom(width: float, height: float) -> float:
+    """Use the normal 2x OCR scale unless it would exceed the pixel budget."""
+    area = max(width, 0) * max(height, 0)
+    if not area:
+        return 2.0
+    zoom = min(2.0, math.sqrt(MAX_OCR_PAGE_PIXELS / area))
+    # PyMuPDF rounds raster dimensions up, so account for that rounding too.
+    while math.ceil(width * zoom) * math.ceil(height * zoom) > MAX_OCR_PAGE_PIXELS:
+        zoom *= 0.999
+    return zoom
+
+
+def _render_pdf_page(content: bytes, page_number: int) -> bytes:
+    """Render one bounded-size page to PNG entirely on its worker thread."""
+    import fitz
+
+    doc = fitz.open(stream=content, filetype="pdf")
+    try:
+        page = doc.load_page(page_number)
+        zoom = _pdf_render_zoom(page.rect.width, page.rect.height)
+        pix = page.get_pixmap(
+            matrix=fitz.Matrix(zoom, zoom),
+            alpha=False,
+        )
+        return pix.tobytes("png")
+    finally:
+        doc.close()
 
 
 def _extract_from_docx(content: bytes) -> str:

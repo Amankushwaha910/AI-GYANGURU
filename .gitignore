@@ -47,6 +47,7 @@ alembic/versions/*.pyc
 # ── Logs ──────────────────────────────────────────────────────
 *.log
 logs/
+/backend/.runtime-logs/request-timing/
 
 # ── Docker ────────────────────────────────────────────────────
 docker-compose.override.yml

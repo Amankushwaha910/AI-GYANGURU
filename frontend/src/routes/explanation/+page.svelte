@@ -5,6 +5,8 @@
 	import { ApiClientError } from '$api/client';
 	import { modelSelector } from '$stores/modelSelector';
 	import { onMount } from 'svelte';
+	import { createReadyUploadLoader } from '$lib/upload/readyUploadLoader.mjs';
+	import { formatAiContent } from '$lib/formatAiContent.mjs';
 	import type { Explanation, Upload } from '$types';
 	import { EXPLANATION_SECTION_LABELS, formatFileSize } from '$lib/utils';
 	import Button from '$components/ui/Button.svelte';
@@ -25,6 +27,8 @@
 	let readyUploads: Upload[] = [];
 	let selectedUploadId = '';
 	let loadingUploads = false;
+	let uploadsError = '';
+	const uploadLoader = createReadyUploadLoader(() => filesApi.list({ page: 1, page_size: 50 }));
 
 	const ORDERED_SECTIONS = [
 		'introduction', 'step_by_step', 'concept_breakdown', 'real_examples',
@@ -34,19 +38,32 @@
 	let collapsed: Record<string, boolean> = {};
 	let copied: Record<string, boolean> = {};
 
-	onMount(async () => {
-		const urlUploadId = $page.url.searchParams.get('upload_id');
+	async function loadUploads(urlUploadId = '') {
 		loadingUploads = true;
+		uploadsError = '';
 		try {
-			const res = await filesApi.list({ page: 1, page_size: 50 });
-			readyUploads = res.data.filter(u => u.status === 'completed');
-			if (urlUploadId && readyUploads.some(u => u.id === urlUploadId)) {
+			readyUploads = await uploadLoader.load();
+			if (urlUploadId) {
 				sourceMode = 'file';
-				selectedUploadId = urlUploadId;
+				if (readyUploads.some((u) => u.id === urlUploadId)) selectedUploadId = urlUploadId;
+				else uploadsError = 'The linked file is not ready or is unavailable. Choose another file or upload it again.';
 			}
-		} catch { /* non-critical */ } finally {
+		} catch {
+			uploadsError = 'Could not load your files. Check your connection and try again.';
+		} finally {
 			loadingUploads = false;
 		}
+	}
+
+	function selectSourceMode(mode: 'topic' | 'file') {
+		sourceMode = mode;
+		error = '';
+		if (mode === 'file' && readyUploads.length === 0 && !loadingUploads && !uploadsError) void loadUploads();
+	}
+
+	onMount(() => {
+		const urlUploadId = $page.url.searchParams.get('upload_id');
+		if (urlUploadId) void loadUploads(urlUploadId);
 	});
 
 	function toggle(key: string) {
@@ -59,10 +76,6 @@
 		copied[key] = true;
 		copied = { ...copied };
 		setTimeout(() => { copied[key] = false; copied = { ...copied }; }, 2000);
-	}
-
-	function formatContent(text: string): string {
-		return text.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
 	}
 
 	async function generate() {
@@ -85,9 +98,10 @@
 			} else {
 				res = await explanationsApi.generate({ topic: topic.trim(), model, provider });
 			}
-			result = res.data ?? null;
+			if (!res.data) throw new ApiClientError('EMPTY_RESPONSE', 'The explanation response was empty. Please try again.', 502);
+			result = res.data;
 			toast.success('Explanation ready!');
-		} catch (e: any) {
+		} catch (e: unknown) {
 			error = e instanceof ApiClientError ? e.message : 'Generation failed. Please try again.';
 			toast.error(error);
 		} finally {
@@ -118,12 +132,12 @@
 
 			<!-- Source mode tabs -->
 			<div class="flex gap-1 rounded-xl bg-gray-100 dark:bg-gray-800 p-1 w-fit">
-				<button type="button" on:click={() => { sourceMode = 'topic'; error = ''; }}
+				<button type="button" on:click={() => selectSourceMode('topic')}
 					class="rounded-lg px-4 py-1.5 text-sm font-medium transition-all
 					       {sourceMode === 'topic' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'}">
 					Topic
 				</button>
-				<button type="button" on:click={() => { sourceMode = 'file'; error = ''; }}
+				<button type="button" on:click={() => selectSourceMode('file')}
 					class="rounded-lg px-4 py-1.5 text-sm font-medium transition-all
 					       {sourceMode === 'file' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'}">
 					Uploaded File
@@ -143,6 +157,9 @@
 					<label for="file-select-explanation" class="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1.5">Select Uploaded File</label>
 					{#if loadingUploads}
 						<p class="text-sm text-gray-400">Loading your files…</p>
+					{:else if uploadsError}
+						<p class="text-sm text-red-600 dark:text-red-400">{uploadsError}</p>
+						<button type="button" class="mt-1 text-sm underline" on:click={() => void loadUploads()}>Try again</button>
 					{:else if readyUploads.length === 0}
 						<p class="text-sm text-gray-500 dark:text-gray-400">
 							No processed files yet.
@@ -210,35 +227,31 @@
 			{@const content = result.content[sectionKey] ?? ''}
 			{#if content}
 				<Card padding="none" class="mb-3">
-					<button
-						class="flex w-full items-center justify-between px-5 py-4 text-left"
-						on:click={() => toggle(sectionKey)}
-					>
+					<div class="flex w-full items-center px-5 py-4 gap-2">
+					<button type="button" aria-expanded={!collapsed[sectionKey]} class="flex min-w-0 flex-1 items-center justify-between text-left" on:click={() => toggle(sectionKey)}>
 						<span class="font-semibold text-sm text-gray-900 dark:text-white">
 							{EXPLANATION_SECTION_LABELS[sectionKey] ?? sectionKey}
 						</span>
-						<div class="flex items-center gap-2">
-							<button
-								on:click|stopPropagation={() => copySection(sectionKey, content)}
-								class="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-							>
-								{#if copied[sectionKey]}
-									<Check class="h-3.5 w-3.5 text-green-500" />
-								{:else}
-									<Copy class="h-3.5 w-3.5" />
-								{/if}
-							</button>
-							{#if collapsed[sectionKey]}
-								<ChevronDown class="h-4 w-4 text-gray-400" />
-							{:else}
-								<ChevronUp class="h-4 w-4 text-gray-400" />
-							{/if}
-						</div>
+						{#if collapsed[sectionKey]}
+							<ChevronDown class="h-4 w-4 text-gray-400" />
+						{:else}
+							<ChevronUp class="h-4 w-4 text-gray-400" />
+						{/if}
 					</button>
+					<button type="button" aria-label="Copy section" on:click={() => copySection(sectionKey, content)}
+						class="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+						{#if copied[sectionKey]}
+							<Check class="h-3.5 w-3.5 text-green-500" />
+						{:else}
+							<Copy class="h-3.5 w-3.5" />
+						{/if}
+					</button>
+					</div>
 					{#if !collapsed[sectionKey]}
 						<div class="px-5 pb-5 border-t border-gray-100 dark:border-gray-800 pt-4">
 							<div class="prose prose-sm dark:prose-invert max-w-none text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
-								{@html formatContent(content)}
+								<!-- eslint-disable-next-line svelte/no-at-html-tags -- formatter escapes provider text and only adds fixed formatting tags. -->
+								{@html formatAiContent(content)}
 							</div>
 						</div>
 					{/if}

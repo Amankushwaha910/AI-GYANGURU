@@ -2,6 +2,7 @@
 Explanation service.
 """
 from typing import List, Optional, Tuple
+from time import perf_counter
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from app.ai.dispatcher import get_dispatcher
 from app.ai.prompt_builder import get_prompt_builder
 from app.ai.response_formatter import get_response_formatter
 from app.core.exceptions import NotFoundError
+from app.core.performance import add_timing
 from app.models.analytics import EventType
 from app.models.explanation import Explanation
 from app.models.history import HistoryItemType
@@ -37,8 +39,12 @@ class ExplanationService:
     async def generate_from_topic(
         self, user_id: UUID, request: GenerateExplanationRequest
     ) -> Explanation:
+        phase_started = perf_counter()
         messages = self.prompt_builder.build_explanation_prompt(topic=request.topic)
+        add_timing("prompt_build", (perf_counter() - phase_started) * 1000)
 
+        # Finish the authentication read transaction before waiting on AI.
+        await self.db.commit()
         ai_response, _ = await self.dispatcher.complete(
             messages=messages,
             model=request.model,
@@ -46,10 +52,13 @@ class ExplanationService:
             temperature=0.7,
         )
 
+        phase_started = perf_counter()
         parsed = self.formatter.extract_json(ai_response.content)
         content = self.formatter.validate_explanation_response(parsed)
+        add_timing("response_parse", (perf_counter() - phase_started) * 1000)
 
-        explanation = await self.explanation_repo.create(
+        phase_started = perf_counter()
+        explanation = await self.explanation_repo.create_without_refresh(
             user_id=user_id,
             topic=request.topic,
             content=content,
@@ -58,30 +67,40 @@ class ExplanationService:
         )
 
         await self._post_generation_hooks(user_id, request.topic, str(explanation.id))
+        add_timing("persist_and_history", (perf_counter() - phase_started) * 1000)
         return explanation
 
     async def generate_from_file(
         self, user_id: UUID, request: GenerateExplanationFromFileRequest
     ) -> Explanation:
+        phase_started = perf_counter()
         upload = await self.upload_repo.get_user_upload(user_id, request.upload_id)
+        add_timing("file_text_lookup", (perf_counter() - phase_started) * 1000)
         if not upload or not upload.extracted_text:
             raise NotFoundError("Upload or extracted text", str(request.upload_id))
 
         topic = f"Content from: {upload.original_filename}"
+        phase_started = perf_counter()
         messages = self.prompt_builder.build_explanation_prompt(
             topic=topic, extracted_text=upload.extracted_text
         )
+        add_timing("prompt_build", (perf_counter() - phase_started) * 1000)
 
+        # Upload content is in memory; release the DB connection before AI.
+        await self.db.commit()
         ai_response, _ = await self.dispatcher.complete(
             messages=messages, model=request.model,
             provider=getattr(request, 'provider', None),
             temperature=0.7
         )
 
+        phase_started = perf_counter()
         parsed = self.formatter.extract_json(ai_response.content)
         content = self.formatter.validate_explanation_response(parsed)
+        add_timing("response_parse", (perf_counter() - phase_started) * 1000)
 
-        explanation = await self.explanation_repo.create(
+        phase_started = perf_counter()
+        explanation = await self.explanation_repo.create_without_refresh(
             user_id=user_id,
             upload_id=request.upload_id,
             topic=topic,
@@ -91,6 +110,7 @@ class ExplanationService:
         )
 
         await self._post_generation_hooks(user_id, topic, str(explanation.id))
+        add_timing("persist_and_history", (perf_counter() - phase_started) * 1000)
         return explanation
 
     async def get_explanation(self, user_id: UUID, explanation_id: UUID) -> Explanation:

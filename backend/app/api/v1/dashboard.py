@@ -2,23 +2,56 @@
 Dashboard routes — /api/v1/dashboard
 Aggregates data from multiple services for the home dashboard view.
 """
-from typing import List, Optional
-from uuid import UUID
+from typing import Any, List
 from datetime import datetime
+from time import perf_counter
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.routing import APIRoute
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import CurrentUser
-from app.repositories.analytics_repository import AnalyticsRepository
-from app.repositories.history_repository import HistoryRepository
+from app.core.dependencies import CurrentUserFast
+from app.core.performance import add_timing
+from app.repositories.dashboard_repository import DashboardRepository
 from app.schemas.analytics import AnalyticsSummary, DailyActivityItem
 from app.schemas.common import APIResponse
-from app.services.analytics_service import AnalyticsService
 
-router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+class DashboardTimingRoute(APIRoute):
+    """Expose route processing time, including FastAPI response serialization."""
+
+    def get_route_handler(self):
+        original_handler = super().get_route_handler()
+
+        async def timed_handler(request: Request):
+            started = perf_counter()
+            try:
+                return await original_handler(request)
+            finally:
+                add_timing("dashboard_route_pipeline", (perf_counter() - started) * 1000)
+
+        return timed_handler
+
+
+class DashboardJSONResponse(JSONResponse):
+    """Measure JSON byte rendering without changing the response format."""
+
+    def render(self, content: Any) -> bytes:
+        started = perf_counter()
+        try:
+            return super().render(content)
+        finally:
+            add_timing("dashboard_json_render", (perf_counter() - started) * 1000)
+
+
+router = APIRouter(
+    prefix="/dashboard",
+    tags=["Dashboard"],
+    route_class=DashboardTimingRoute,
+    default_response_class=DashboardJSONResponse,
+)
 
 
 class RecentActivityItem(BaseModel):
@@ -38,7 +71,7 @@ class DashboardResponse(BaseModel):
 
 @router.get("", response_model=APIResponse[DashboardResponse])
 async def get_dashboard(
-    current_user: CurrentUser,
+    current_user: CurrentUserFast,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -48,35 +81,42 @@ async def get_dashboard(
     - Weekly activity chart data
     - Quiz accuracy trend (7 days)
     """
-    analytics_service = AnalyticsService(db)
-    full_dashboard = await analytics_service.get_dashboard(current_user.id)
-
-    # Recent activity — last 10 items
-    history_repo = HistoryRepository(db)
-    recent_items, _ = await history_repo.get_user_history(
-        user_id=current_user.id, page=1, page_size=10
-    )
-
-    recent_activity = [
-        RecentActivityItem(
-            id=str(item.id),
-            item_type=item.item_type.value if hasattr(item.item_type, "value") else item.item_type,
-            topic=item.topic,
-            resource_id=item.resource_id,
-            created_at=item.created_at,
+    handler_started = perf_counter()
+    try:
+        dashboard_data = await DashboardRepository(db).get_home_dashboard_data(current_user.id)
+        counts = dashboard_data["summary"]
+        quiz_accuracy = dashboard_data["quiz_accuracy"]
+        total_answered = quiz_accuracy["total"]
+        overall_accuracy = (
+            round((quiz_accuracy["correct"] / total_answered) * 100, 1)
+            if total_answered
+            else 0.0
         )
-        for item in recent_items
-    ]
-
-    # Weekly activity = last 7 days of daily_activity
-    weekly_activity = full_dashboard.daily_activity[-7:]
-    quiz_week = full_dashboard.quiz_accuracy_trend[-7:]
-
-    return APIResponse(
-        data=DashboardResponse(
-            summary=full_dashboard.summary,
-            recent_activity=recent_activity,
-            weekly_activity=weekly_activity,
-            quiz_accuracy_week=quiz_week,
+        summary = AnalyticsSummary(
+            total_topics_studied=counts["topics"],
+            total_summaries_generated=counts["summaries"],
+            total_explanations_generated=counts["explanations"],
+            total_quizzes_taken=counts["quizzes"],
+            overall_quiz_accuracy=overall_accuracy,
         )
-    )
+        weekly_activity = [
+            DailyActivityItem(**item) for item in dashboard_data["weekly_activity"]
+        ]
+        quiz_week = [
+            DailyActivityItem(date=item["date"], count=round(float(item["count"] or 0), 1))
+            for item in dashboard_data["quiz_accuracy_week"]
+        ]
+        recent_activity = [
+            RecentActivityItem(**item) for item in dashboard_data["recent_activity"]
+        ]
+
+        return APIResponse(
+            data=DashboardResponse(
+                summary=summary,
+                recent_activity=recent_activity,
+                weekly_activity=weekly_activity,
+                quiz_accuracy_week=quiz_week,
+            )
+        )
+    finally:
+        add_timing("dashboard_handler", (perf_counter() - handler_started) * 1000)

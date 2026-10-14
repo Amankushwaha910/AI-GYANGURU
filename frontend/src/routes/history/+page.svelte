@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { historyApi } from '$api/history';
 	import { toast } from '$stores/toast';
 	import type { HistoryItem, HistoryItemType } from '$types';
@@ -18,6 +18,8 @@
 	let search = '';
 	let activeType: HistoryItemType | '' = '';
 	let deletingId: string | null = null;
+	let loadError = '';
+	let latestLoadId = 0;
 
 	const typeFilters: { value: HistoryItemType | ''; label: string }[] = [
 		{ value: '',            label: 'All'          },
@@ -28,6 +30,9 @@
 	];
 
 	async function load() {
+		const loadId = ++latestLoadId;
+		const flowStarted = performance.now();
+		loadError = '';
 		loading = true;
 		try {
 			const res = await historyApi.list({
@@ -36,10 +41,22 @@
 				item_type: activeType || undefined,
 				search: search || undefined,
 			});
-			items = res.data;
-			total = res.total;
+			if (loadId === latestLoadId) {
+				items = res.data;
+				total = res.total;
+			}
+		} catch {
+			if (loadId === latestLoadId) {
+				items = [];
+				total = 0;
+				loadError = 'Could not load history. Check your connection and try again.';
+			}
 		} finally {
-			loading = false;
+			if (loadId === latestLoadId) {
+				loading = false;
+				await tick();
+				console.debug(`[flow timing] history page visible: ${(performance.now() - flowStarted).toFixed(0)} ms`);
+			}
 		}
 	}
 
@@ -116,11 +133,17 @@
 		</div>
 
 	{:else if items.length === 0}
+		{#if loadError}
+			<EmptyState icon={Clock} title="History unavailable" description={loadError}>
+				<Button variant="secondary" size="sm" on:click={() => void load()}>Try again</Button>
+			</EmptyState>
+		{:else}
 		<EmptyState
 			icon={Clock}
 			title="No history yet"
 			description="Start learning and your activity will appear here."
 		/>
+		{/if}
 
 	{:else}
 		<div class="space-y-2">

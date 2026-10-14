@@ -2,6 +2,7 @@
 Summary service — orchestrates AI generation, persistence, and history logging.
 """
 import uuid
+from time import perf_counter
 from typing import List, Optional, Tuple
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from app.ai.dispatcher import get_dispatcher
 from app.ai.prompt_builder import get_prompt_builder
 from app.ai.response_formatter import get_response_formatter
 from app.core.exceptions import NotFoundError
+from app.core.performance import add_timing
 from app.core.security import hash_content
 from app.models.analytics import EventType
 from app.models.history import HistoryItemType
@@ -39,11 +41,15 @@ class SummaryService:
         """Generate a summary for a topic using AI."""
         sections = [s.value for s in request.sections]
 
+        phase_started = perf_counter()
         messages = self.prompt_builder.build_summary_prompt(
             topic=request.topic,
             sections=sections,
         )
+        add_timing("prompt_build", (perf_counter() - phase_started) * 1000)
 
+        # Finish the authentication read transaction before waiting on AI.
+        await self.db.commit()
         ai_response, latency = await self.dispatcher.complete(
             messages=messages,
             model=request.model,
@@ -51,12 +57,15 @@ class SummaryService:
             temperature=0.7,
         )
 
+        phase_started = perf_counter()
         parsed = self.formatter.extract_json(ai_response.content)
         content = self.formatter.validate_summary_response(parsed, sections)
+        add_timing("response_parse", (perf_counter() - phase_started) * 1000)
 
         word_count = sum(len(v.split()) for v in content.values())
 
-        summary = await self.summary_repo.create(
+        phase_started = perf_counter()
+        summary = await self.summary_repo.create_without_refresh(
             user_id=user_id,
             topic=request.topic,
             sections_requested=sections,
@@ -71,6 +80,7 @@ class SummaryService:
             topic=request.topic,
             resource_id=str(summary.id),
         )
+        add_timing("persist_and_history", (perf_counter() - phase_started) * 1000)
 
         return summary
 
@@ -78,7 +88,9 @@ class SummaryService:
         self, user_id: UUID, request: GenerateSummaryFromFileRequest
     ) -> Summary:
         """Generate a summary from an uploaded file."""
+        phase_started = perf_counter()
         upload = await self.upload_repo.get_user_upload(user_id, request.upload_id)
+        add_timing("file_text_lookup", (perf_counter() - phase_started) * 1000)
         if not upload:
             raise NotFoundError("Upload", str(request.upload_id))
 
@@ -88,12 +100,16 @@ class SummaryService:
         sections = [s.value for s in request.sections]
         topic = f"Content from: {upload.original_filename}"
 
+        phase_started = perf_counter()
         messages = self.prompt_builder.build_summary_prompt(
             topic=topic,
             sections=sections,
             extracted_text=upload.extracted_text,
         )
+        add_timing("prompt_build", (perf_counter() - phase_started) * 1000)
 
+        # Upload content is in memory; release the DB connection before AI.
+        await self.db.commit()
         ai_response, _ = await self.dispatcher.complete(
             messages=messages,
             model=request.model,
@@ -101,12 +117,15 @@ class SummaryService:
             temperature=0.7,
         )
 
+        phase_started = perf_counter()
         parsed = self.formatter.extract_json(ai_response.content)
         content = self.formatter.validate_summary_response(parsed, sections)
+        add_timing("response_parse", (perf_counter() - phase_started) * 1000)
 
         word_count = sum(len(v.split()) for v in content.values())
 
-        summary = await self.summary_repo.create(
+        phase_started = perf_counter()
+        summary = await self.summary_repo.create_without_refresh(
             user_id=user_id,
             upload_id=request.upload_id,
             topic=topic,
@@ -122,6 +141,7 @@ class SummaryService:
             topic=topic,
             resource_id=str(summary.id),
         )
+        add_timing("persist_and_history", (perf_counter() - phase_started) * 1000)
 
         return summary
 

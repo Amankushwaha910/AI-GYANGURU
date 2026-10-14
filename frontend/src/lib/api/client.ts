@@ -2,11 +2,16 @@
  * Base API client.
  * All API calls go through here — handles auth headers, errors, and token refresh.
  */
-import { browser } from '$app/environment';
+import { browser, dev } from '$app/environment';
 import { goto } from '$app/navigation';
 import { authStore } from '$lib/stores/auth';
 import type { APIError } from '$types';
-import { get } from 'svelte/store';
+import { runRefreshSingleFlight } from './refreshCoordinator.mjs';
+import { dashboardTiming } from './dashboardTimingStore';
+import {
+	createDashboardTimingRecord,
+	isDashboardTimingRequest
+} from './timingDiagnostics.mjs';
 // SvelteKit: PUBLIC_ vars must be accessed via $env/static/public, not import.meta.env.
 import { PUBLIC_API_URL } from '$env/static/public';
 
@@ -24,28 +29,30 @@ export class ApiClientError extends Error {
 }
 
 async function refreshAccessToken(): Promise<string | null> {
-	const refresh_token = browser ? localStorage.getItem('refresh_token') : null;
-	if (!refresh_token) return null;
+	return runRefreshSingleFlight(async () => {
+		const refresh_token = browser ? localStorage.getItem('refresh_token') : null;
+		if (!refresh_token) return null;
 
-	try {
-		const res = await fetch(`${API_BASE}/auth/refresh`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ refresh_token })
-		});
-		if (!res.ok) return null;
-		const data = await res.json();
-		const newToken = data.data?.access_token;
-		if (newToken && browser) {
-			localStorage.setItem('access_token', newToken);
-			if (data.data?.refresh_token) {
-				localStorage.setItem('refresh_token', data.data.refresh_token);
+		try {
+			const res = await fetch(API_BASE + '/auth/refresh', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ refresh_token })
+			});
+			if (!res.ok) return null;
+			const data = await res.json();
+			const newToken = data.data?.access_token;
+			if (newToken && browser) {
+				localStorage.setItem('access_token', newToken);
+				if (data.data?.refresh_token) {
+					localStorage.setItem('refresh_token', data.data.refresh_token);
+				}
 			}
+			return newToken ?? null;
+		} catch {
+			return null;
 		}
-		return newToken ?? null;
-	} catch {
-		return null;
-	}
+	});
 }
 
 export async function apiFetch<T>(
@@ -53,6 +60,9 @@ export async function apiFetch<T>(
 	options: RequestInit = {},
 	retry = true
 ): Promise<T> {
+	const requestStarted = typeof performance !== 'undefined' ? performance.now() : Date.now();
+	const method = options.method ?? 'GET';
+	const captureDashboardTiming = dev && isDashboardTimingRequest(method, path);
 	const token = browser ? localStorage.getItem('access_token') : null;
 
 	const headers: Record<string, string> = {
@@ -69,7 +79,21 @@ export async function apiFetch<T>(
 		delete headers['Content-Type'];
 	}
 
-	const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+	let res: Response;
+	try {
+		res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+	} catch (error) {
+		if (captureDashboardTiming) {
+			const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+			dashboardTiming.set(createDashboardTimingRecord({
+				method,
+				totalMs: finishedAt - requestStarted,
+				failureKind: 'network'
+			}));
+		}
+		throw error;
+	}
+	const headersReceivedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
 	// Token expired — try refresh once
 	if (res.status === 401 && retry) {
@@ -77,6 +101,18 @@ export async function apiFetch<T>(
 		if (newToken) {
 			return apiFetch<T>(path, options, false);
 		} else {
+			if (captureDashboardTiming) {
+				const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+				dashboardTiming.set(createDashboardTimingRecord({
+					method,
+					status: res.status,
+					totalMs: finishedAt - requestStarted,
+					headersMs: headersReceivedAt - requestStarted,
+					requestId: res.headers.get('X-Request-ID'),
+					serverTiming: res.headers.get('Server-Timing'),
+					failureKind: 'authentication'
+				}));
+			}
 			// Refresh failed — force logout
 			authStore.clearAuth();
 			if (browser) goto('/login');
@@ -84,7 +120,33 @@ export async function apiFetch<T>(
 		}
 	}
 
-	const json = await res.json().catch(() => ({}));
+	const bodyReadStarted = typeof performance !== 'undefined' ? performance.now() : Date.now();
+	let bodyParseFailed = false;
+	const json = await res.json().catch(() => {
+		bodyParseFailed = true;
+		return {};
+	});
+	const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+	if (captureDashboardTiming) {
+		dashboardTiming.set(createDashboardTimingRecord({
+			method,
+			status: res.status,
+			totalMs: finishedAt - requestStarted,
+			headersMs: headersReceivedAt - requestStarted,
+			bodyMs: finishedAt - bodyReadStarted,
+			requestId: res.headers.get('X-Request-ID'),
+			serverTiming: res.headers.get('Server-Timing'),
+			failureKind: bodyParseFailed ? 'body_parse' : null
+		}));
+	}
+	console.debug(
+		`[api timing] ${method} ${path.split('?')[0]}: ` +
+		`fetch_to_headers=${(headersReceivedAt - requestStarted).toFixed(0)} ms, ` +
+		`body_read_and_parse=${(finishedAt - bodyReadStarted).toFixed(0)} ms, ` +
+		`total=${(finishedAt - requestStarted).toFixed(0)} ms` +
+		(res.headers.get('Server-Timing') ? ` (${res.headers.get('Server-Timing')})` : '') +
+		(res.headers.get('X-Request-ID') ? ` request_id=${res.headers.get('X-Request-ID')}` : '')
+	);
 
 	if (!res.ok) {
 		const err = json as APIError;
@@ -100,7 +162,8 @@ export async function apiFetch<T>(
 
 /** Convenience wrappers */
 export const api = {
-	get: <T>(path: string) => apiFetch<T>(path, { method: 'GET' }),
+	get: <T>(path: string, options: Pick<RequestInit, 'signal'> = {}) =>
+		apiFetch<T>(path, { method: 'GET', ...options }),
 
 	post: <T>(path: string, body: unknown) =>
 		apiFetch<T>(path, {

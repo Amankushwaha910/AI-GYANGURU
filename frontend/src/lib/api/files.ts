@@ -16,7 +16,8 @@ export const filesApi = {
 		return api.get<PaginatedResponse<Upload>>(`/files?${q}`);
 	},
 
-	get: (id: string) => api.get<APIResponse<Upload>>(`/files/${id}`),
+	get: (id: string, signal?: AbortSignal) =>
+		api.get<APIResponse<Upload>>(`/files/${id}`, { signal }),
 
 	delete: (id: string) => api.delete<APIResponse<null>>(`/files/${id}`)
 };

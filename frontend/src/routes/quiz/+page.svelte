@@ -6,6 +6,7 @@
 	import { ApiClientError } from '$api/client';
 	import { modelSelector } from '$stores/modelSelector';
 	import { onMount } from 'svelte';
+	import { createReadyUploadLoader } from '$lib/upload/readyUploadLoader.mjs';
 	import type { QuizDifficulty, Upload } from '$types';
 	import { formatFileSize } from '$lib/utils';
 	import Button from '$components/ui/Button.svelte';
@@ -29,6 +30,8 @@
 	let readyUploads: Upload[] = [];
 	let selectedUploadId = '';
 	let loadingUploads = false;
+	let uploadsError = '';
+	const uploadLoader = createReadyUploadLoader(() => filesApi.list({ page: 1, page_size: 50 }));
 
 	const difficultyOptions = [
 		{ value: 'easy', label: 'Easy' },
@@ -44,19 +47,32 @@
 		{ value: '20', label: '20 Questions' }
 	];
 
-	onMount(async () => {
-		const urlUploadId = $page.url.searchParams.get('upload_id');
+	async function loadUploads(urlUploadId = '') {
 		loadingUploads = true;
+		uploadsError = '';
 		try {
-			const res = await filesApi.list({ page: 1, page_size: 50 });
-			readyUploads = res.data.filter(u => u.status === 'completed');
-			if (urlUploadId && readyUploads.some(u => u.id === urlUploadId)) {
+			readyUploads = await uploadLoader.load();
+			if (urlUploadId) {
 				sourceMode = 'file';
-				selectedUploadId = urlUploadId;
+				if (readyUploads.some((u) => u.id === urlUploadId)) selectedUploadId = urlUploadId;
+				else uploadsError = 'The linked file is not ready or is unavailable. Choose another file or upload it again.';
 			}
-		} catch { /* non-critical */ } finally {
+		} catch {
+			uploadsError = 'Could not load your files. Check your connection and try again.';
+		} finally {
 			loadingUploads = false;
 		}
+	}
+
+	function selectSourceMode(mode: 'topic' | 'file') {
+		sourceMode = mode;
+		error = '';
+		if (mode === 'file' && readyUploads.length === 0 && !loadingUploads && !uploadsError) void loadUploads();
+	}
+
+	onMount(() => {
+		const urlUploadId = $page.url.searchParams.get('upload_id');
+		if (urlUploadId) void loadUploads(urlUploadId);
 	});
 
 	async function generate() {
@@ -92,8 +108,8 @@
 			if (res.data) {
 				toast.success('Quiz ready! Starting now…');
 				goto(`/quiz/${res.data.id}/play`);
-			}
-		} catch (e: any) {
+			} else throw new ApiClientError('EMPTY_RESPONSE', 'The quiz response was empty. Please try again.', 502);
+		} catch (e: unknown) {
 			error = e instanceof ApiClientError ? e.message : 'Failed to generate quiz.';
 			toast.error(error);
 		} finally {
@@ -122,12 +138,12 @@
 
 			<!-- Source mode tabs -->
 			<div class="flex gap-1 rounded-xl bg-gray-100 dark:bg-gray-800 p-1 w-fit">
-				<button type="button" on:click={() => { sourceMode = 'topic'; error = ''; }}
+				<button type="button" on:click={() => selectSourceMode('topic')}
 					class="rounded-lg px-4 py-1.5 text-sm font-medium transition-all
 					       {sourceMode === 'topic' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'}">
 					Topic
 				</button>
-				<button type="button" on:click={() => { sourceMode = 'file'; error = ''; }}
+				<button type="button" on:click={() => selectSourceMode('file')}
 					class="rounded-lg px-4 py-1.5 text-sm font-medium transition-all
 					       {sourceMode === 'file' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'}">
 					Uploaded File
@@ -147,6 +163,9 @@
 					<label for="file-select-quiz" class="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1.5">Select Uploaded File</label>
 					{#if loadingUploads}
 						<p class="text-sm text-gray-400">Loading your files…</p>
+					{:else if uploadsError}
+						<p class="text-sm text-red-600 dark:text-red-400">{uploadsError}</p>
+						<button type="button" class="mt-1 text-sm underline" on:click={() => void loadUploads()}>Try again</button>
 					{:else if readyUploads.length === 0}
 						<p class="text-sm text-gray-500 dark:text-gray-400">
 							No processed files yet.

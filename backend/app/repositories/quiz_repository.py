@@ -120,3 +120,51 @@ class QuizAttemptRepository(BaseRepository[QuizAttempt]):
             }
             for row in rows
         ]
+
+    async def get_home_accuracy_and_trend(
+        self, user_id: UUID, days: int = 7
+    ) -> tuple[int, int, List[dict]]:
+        """Fetch dashboard overall accuracy and its daily trend in one query."""
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import Date, Float, Integer, String, case, cast, literal, null, union_all
+
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        accuracy = (
+            select(
+                literal("summary", type_=String()).label("kind"),
+                cast(null(), Date).label("day"),
+                func.count(QuizAnswer.id).label("total"),
+                func.coalesce(
+                    func.sum(case((QuizAnswer.is_correct == True, 1), else_=0)), 0
+                ).label("correct"),
+                cast(null(), Float).label("average"),
+            )
+            .select_from(QuizQuestion)
+            .join(QuizAnswer, QuizAnswer.question_id == QuizQuestion.id)
+            .join(QuizAttempt, QuizAttempt.id == QuizAnswer.attempt_id)
+            .where(QuizAttempt.user_id == user_id)
+            .where(QuizQuestion.category.isnot(None))
+        )
+        trend = (
+            select(
+                literal("trend", type_=String()).label("kind"),
+                cast(QuizAttempt.created_at, Date).label("day"),
+                cast(null(), Integer).label("total"),
+                cast(null(), Integer).label("correct"),
+                func.avg(QuizAttempt.percentage).label("average"),
+            )
+            .where(QuizAttempt.user_id == user_id)
+            .where(QuizAttempt.created_at >= since)
+            .group_by("day")
+        )
+        result = await self.db.execute(union_all(accuracy, trend).order_by("kind", "day"))
+        total = correct = 0
+        daily_accuracy = []
+        for row in result:
+            if row.kind == "summary":
+                total, correct = row.total, int(row.correct or 0)
+            else:
+                daily_accuracy.append(
+                    {"date": str(row.day), "count": round(float(row.average or 0), 1)}
+                )
+        return total, correct, daily_accuracy

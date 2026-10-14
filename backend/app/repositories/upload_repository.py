@@ -34,13 +34,20 @@ class UploadRepository(BaseRepository[Upload]):
     ) -> Tuple[List[Upload], int]:
         query = select(Upload).where(Upload.user_id == user_id)
 
+        # Compute the total in the same statement as the requested page. Keep
+        # a count fallback for empty or out-of-range pages where a window
+        # result cannot carry the total.
+        page_query = query.add_columns(func.count().over().label("total"))
+        page_query = page_query.order_by(Upload.created_at.desc())
+        page_query = page_query.limit(page_size).offset((page - 1) * page_size)
+
+        rows = (await self.db.execute(page_query)).all()
+        if rows:
+            return [row[0] for row in rows], rows[0][1]
+
         total = (
             await self.db.execute(
                 select(func.count()).select_from(query.subquery())
             )
         ).scalar_one()
-
-        query = query.order_by(Upload.created_at.desc())
-        query = query.limit(page_size).offset((page - 1) * page_size)
-        result = await self.db.execute(query)
-        return list(result.scalars().all()), total
+        return [], total

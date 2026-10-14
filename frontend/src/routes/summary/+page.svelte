@@ -14,7 +14,7 @@
 	import PageLayout from '$components/layout/PageLayout.svelte';
 	import ModelSelector from '$components/ui/ModelSelector.svelte';
 	import SummaryResult from './SummaryResult.svelte';
-	import { BookOpen, Sparkles, FileText, ChevronDown } from 'lucide-svelte';
+	import { BookOpen, Sparkles, ChevronDown } from 'lucide-svelte';
 
 	const ALL_SECTIONS: SummarySection[] = [
 		'definition', 'key_concepts', 'important_facts', 'formula_sheet',
@@ -33,26 +33,49 @@
 	let readyUploads: Upload[] = [];
 	let selectedUploadId = '';
 	let loadingUploads = false;
+	let uploadsError = '';
+	let uploadsLoaded = false;
+	let uploadsRequest: Promise<void> | null = null;
 
-	onMount(async () => {
-		// Check if navigated here with ?upload_id=... (e.g. from /upload page)
-		const urlUploadId = $page.url.searchParams.get('upload_id');
+	async function loadUploads(urlUploadId = '') {
+		if (uploadsLoaded) {
+			if (urlUploadId && readyUploads.some(u => u.id === urlUploadId)) selectedUploadId = urlUploadId;
+			return;
+		}
+		if (uploadsRequest) return uploadsRequest;
 
 		loadingUploads = true;
-		try {
-			const res = await filesApi.list({ page: 1, page_size: 50 });
-			readyUploads = res.data.filter(u => u.status === 'completed');
-
-			if (urlUploadId && readyUploads.some(u => u.id === urlUploadId)) {
-				sourceMode = 'file';
-				selectedUploadId = urlUploadId;
+		uploadsError = '';
+		uploadsRequest = (async () => {
+			try {
+				const res = await filesApi.list({ page: 1, page_size: 50 });
+				readyUploads = res.data.filter(u => u.status === 'completed');
+				uploadsLoaded = true;
+				if (urlUploadId && readyUploads.some(u => u.id === urlUploadId)) selectedUploadId = urlUploadId;
+			} catch {
+				uploadsError = 'Could not load your files. Please try again.';
+			} finally {
+				loadingUploads = false;
+				uploadsRequest = null;
 			}
-		} catch {
-			// Non-critical — topic mode still works
-		} finally {
-			loadingUploads = false;
+		})();
+		return uploadsRequest;
+	}
+
+	onMount(() => {
+		// Check if navigated here with ?upload_id=... (e.g. from /upload page)
+		const urlUploadId = $page.url.searchParams.get('upload_id');
+		if (urlUploadId) {
+			sourceMode = 'file';
+			void loadUploads(urlUploadId);
 		}
 	});
+
+	function selectSourceMode(mode: 'topic' | 'file') {
+		sourceMode = mode;
+		error = '';
+		if (mode === 'file') void loadUploads();
+	}
 
 	// ── Section toggle ─────────────────────────────────────────────────────────
 	function toggleSection(s: SummarySection) {
@@ -97,9 +120,10 @@
 					provider,
 				});
 			}
-			result = res.data ?? null;
+			if (!res.data) throw new ApiClientError('EMPTY_RESPONSE', 'The summary response was empty. Please try again.', 502);
+			result = res.data;
 			toast.success('Summary generated!');
-		} catch (e: any) {
+		} catch (e: unknown) {
 			error = e instanceof ApiClientError ? e.message : 'Generation failed. Please try again.';
 			toast.error(error);
 		} finally {
@@ -130,7 +154,7 @@
 			<div class="flex gap-1 rounded-xl bg-gray-100 dark:bg-gray-800 p-1 w-fit">
 				<button
 					type="button"
-					on:click={() => { sourceMode = 'topic'; error = ''; }}
+					on:click={() => selectSourceMode('topic')}
 					class="rounded-lg px-4 py-1.5 text-sm font-medium transition-all
 					       {sourceMode === 'topic'
 					         ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm'
@@ -140,7 +164,7 @@
 				</button>
 				<button
 					type="button"
-					on:click={() => { sourceMode = 'file'; error = ''; }}
+					on:click={() => selectSourceMode('file')}
 					class="rounded-lg px-4 py-1.5 text-sm font-medium transition-all
 					       {sourceMode === 'file'
 					         ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm'
@@ -166,6 +190,11 @@
 					</label>
 					{#if loadingUploads}
 						<p class="text-sm text-gray-400">Loading your files…</p>
+					{:else if uploadsError}
+						<div class="text-sm text-red-600 dark:text-red-400">
+							<p>{uploadsError}</p>
+							<button type="button" class="mt-1 underline" on:click={() => void loadUploads()}>Try again</button>
+						</div>
 					{:else if readyUploads.length === 0}
 						<p class="text-sm text-gray-500 dark:text-gray-400">
 							No processed files yet.

@@ -1,7 +1,7 @@
 """
 FastAPI dependency injection: current user extraction, role guards.
 """
-from typing import Annotated
+from typing import Annotated, Optional
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -14,11 +14,11 @@ from app.core.security import decode_token
 from app.models.user import User, UserRole
 from app.repositories.user_repository import UserRepository
 
-bearer_scheme = HTTPBearer(auto_error=True)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def _decode_user_id(
-    credentials: HTTPAuthorizationCredentials,
+    credentials: Optional[HTTPAuthorizationCredentials],
 ) -> str:
     """Decode JWT and return user_id string. Raises 401 on failure."""
     credentials_exception = HTTPException(
@@ -26,20 +26,33 @@ async def _decode_user_id(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if credentials is None:
+        raise credentials_exception
+
     try:
         payload = decode_token(credentials.credentials)
         if payload.get("type") != "access":
             raise credentials_exception
-        user_id: str = payload.get("sub")
-        if user_id is None:
+        user_id = payload.get("sub")
+        if not isinstance(user_id, str):
             raise credentials_exception
+        UUID(user_id)
         return user_id
-    except JWTError:
+    except (JWTError, ValueError, TypeError, AttributeError):
         raise credentials_exception
 
 
+async def get_authenticated_user_id(
+    credentials: Annotated[
+        Optional[HTTPAuthorizationCredentials], Depends(bearer_scheme)
+    ],
+) -> str:
+    """Validate bearer credentials before any database dependency is opened."""
+    return await _decode_user_id(credentials)
+
+
 async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+    user_id: Annotated[str, Depends(get_authenticated_user_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     """
@@ -52,8 +65,6 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    user_id = await _decode_user_id(credentials)
-
     repo = UserRepository(db)
     user = await repo.get_with_profile(UUID(user_id))
 
@@ -68,7 +79,7 @@ async def get_current_user(
 
 
 async def get_current_user_fast(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+    user_id: Annotated[str, Depends(get_authenticated_user_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     """
@@ -81,8 +92,6 @@ async def get_current_user_fast(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    user_id = await _decode_user_id(credentials)
-
     repo = UserRepository(db)
     user = await repo.get_by_id(UUID(user_id))
 

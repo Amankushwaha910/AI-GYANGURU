@@ -1,18 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { isAuthenticated, authStore } from '$stores/auth';
-	import { onMount } from 'svelte';
 
-	onMount(() => {
-		// Redirect authenticated users to dashboard, everyone else to login
-		if ($isAuthenticated) {
-			goto('/dashboard');
-		} else if ($authStore.initialized && !$authStore.loading) {
-			goto('/login');
-		}
-	});
-
-	// Reactive redirect once auth state is resolved
+	// Redirect once auth state is resolved. Keeping this in one place avoids
+	// duplicate dashboard navigations when an authenticated user visits `/`.
 	$: if ($authStore.initialized && !$authStore.loading) {
 		if ($isAuthenticated) {
 			goto('/dashboard');

@@ -29,6 +29,8 @@ class OpenAIProvider(BaseAIProvider):
         self._client = AsyncOpenAI(
             api_key=settings.openai_api_key,
             timeout=settings.ai_request_timeout,
+            # Keep retry policy centralized in AIDispatcher.
+            max_retries=0,
         )
 
     def get_provider_name(self) -> str:

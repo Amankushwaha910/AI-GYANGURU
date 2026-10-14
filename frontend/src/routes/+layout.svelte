@@ -6,14 +6,17 @@
 	import { page } from '$app/stores';
 	import { authStore, isAuthenticated } from '$stores/auth';
 	import { themeStore } from '$stores/theme';
-	import { toast } from '$stores/toast';
 	import { authApi } from '$api/auth';
 	import Toast from '$components/ui/Toast.svelte';
 	import Sidebar from '$components/layout/Sidebar.svelte';
 
 	// Public routes that don't require authentication
 	const publicRoutes = ['/login', '/register', '/'];
-	$: isPublic = publicRoutes.includes($page.url.pathname);
+	// During dev-server HMR, SvelteKit can briefly recreate the root layout
+	// before the page store has its URL. Fall back to the browser's current path
+	// for that transient state so auth gating does not crash the entire layout.
+	$: routePath = $page?.url?.pathname ?? (browser ? window.location.pathname : '/');
+	$: isPublic = publicRoutes.includes(routePath);
 
 	onMount(async () => {
 		themeStore.init();
@@ -29,7 +32,7 @@
 				} else {
 					authStore.clearAuth();
 				}
-			} catch (err: any) {
+			} catch {
 				// Token invalid/expired — clear session silently
 				authStore.clearAuth();
 			}
@@ -44,9 +47,7 @@
 	}
 </script>
 
-{#if isPublic}
-	<slot />
-{:else if $authStore.loading}
+{#if !isPublic && $authStore.loading}
 	<!-- Loading splash while verifying session -->
 	<div class="flex h-screen items-center justify-center bg-gray-50 dark:bg-gray-950">
 		<div class="flex flex-col items-center gap-4">
@@ -54,10 +55,16 @@
 			<p class="text-sm text-gray-500 dark:text-gray-400">Loading AI GyanGuru...</p>
 		</div>
 	</div>
-{:else if $isAuthenticated}
-	<div class="flex">
-		<Sidebar />
-		<div class="content-area">
+{:else if !isPublic && !$isAuthenticated}
+	<!-- Keep protected page content hidden until authentication is resolved. -->
+	<div class="h-screen bg-gray-50 dark:bg-gray-950"></div>
+{:else}
+	<!-- Keep one slot instance across public → authenticated SPA navigation. -->
+	<div class:flex={!isPublic && $isAuthenticated}>
+		{#if !isPublic && $isAuthenticated}
+			<Sidebar />
+		{/if}
+		<div class:content-area={!isPublic && $isAuthenticated}>
 			<slot />
 		</div>
 	</div>

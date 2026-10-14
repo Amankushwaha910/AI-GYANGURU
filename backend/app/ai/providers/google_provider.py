@@ -78,7 +78,8 @@ class GoogleProvider(BaseAIProvider):
                 )
                 response = gemini_model.generate_content(
                     [c["parts"][0] for c in contents] if len(contents) == 1
-                    else contents
+                    else contents,
+                    request_options={"timeout": settings.ai_request_timeout},
                 )
                 return response
 

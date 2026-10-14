@@ -2,7 +2,7 @@
  * Auth store — manages current user, tokens, and session state.
  */
 import { browser } from '$app/environment';
-import { writable, derived, get } from 'svelte/store';
+import { writable, derived } from 'svelte/store';
 import type { User } from '$types';
 
 interface AuthState {

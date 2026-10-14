@@ -6,6 +6,8 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.schemas.user import UserResponse
+
 
 class RegisterRequest(BaseModel):
     """Schema for new user registration."""
@@ -36,6 +38,7 @@ class TokenResponse(BaseModel):
     access_token: str = Field(..., description="Short-lived JWT access token")
     refresh_token: str = Field(..., description="Long-lived JWT refresh token")
     token_type: str = Field(default="bearer", description="Token type")
+    user: Optional[UserResponse] = None
 
 
 class RefreshRequest(BaseModel):

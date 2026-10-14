@@ -1,5 +1,7 @@
 <script lang="ts">
-	export let icon: any = null;
+	import type { ComponentType } from 'svelte';
+
+	export let icon: ComponentType | null = null;
 	export let title: string = 'Nothing here yet';
 	export let description: string = '';
 </script>

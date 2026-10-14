@@ -114,8 +114,7 @@ class ResponseFormatter:
                 return {"questions": result}
 
         raise AIProviderError(
-            f"Could not extract valid JSON from AI response. "
-            f"Raw text preview: {text[:200]}"
+            "The AI returned an invalid response format. Please try again."
         )
 
     def validate_summary_response(self, data: dict, sections: list) -> dict[str, str]:

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { dev } from '$app/environment';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { currentUser } from '$stores/auth';
 	import { analyticsApi } from '$api/analytics';
 	import { formatRelativeTime, HISTORY_TYPE_COLORS, HISTORY_TYPE_LABELS } from '$lib/utils';
@@ -7,6 +8,8 @@
 	import Card from '$components/ui/Card.svelte';
 	import Skeleton from '$components/ui/Skeleton.svelte';
 	import PageLayout from '$components/layout/PageLayout.svelte';
+	import DashboardTimingPanel from '$components/ui/DashboardTimingPanel.svelte';
+	import { clearDashboardTiming } from '$lib/api/dashboardTimingStore';
 	import {
 		BookOpen, Lightbulb, HelpCircle, Upload,
 		TrendingUp, Target, Zap, Clock, BarChart2
@@ -14,8 +17,12 @@
 
 	let dashboard: DashboardData | null = null;
 	let loading = true;
+	const dashboardInstanceId = Math.random().toString(36).slice(2, 9);
 
 	onMount(async () => {
+		if (dev) clearDashboardTiming();
+		const flowStarted = performance.now();
+		console.debug(`[dashboard lifecycle] mount=${dashboardInstanceId}`);
 		try {
 			const res = await analyticsApi.getHomeDashboard();
 			dashboard = res.data ?? null;
@@ -23,8 +30,12 @@
 			// non-fatal
 		} finally {
 			loading = false;
+			await tick();
+			console.debug(`[flow timing] dashboard instance=${dashboardInstanceId} data visible: ${(performance.now() - flowStarted).toFixed(0)} ms`);
 		}
 	});
+
+	onDestroy(() => console.debug(`[dashboard lifecycle] destroy=${dashboardInstanceId}`));
 
 	$: greeting = (() => {
 		const h = new Date().getHours();
@@ -61,6 +72,9 @@
 <svelte:head><title>Dashboard — AI GyanGuru</title></svelte:head>
 
 <PageLayout>
+	{#if dev}
+		<DashboardTimingPanel />
+	{/if}
 
 	<!-- ── Greeting banner ─────────────────────────────────────────────── -->
 	<div class="mb-6 rounded-2xl bg-gradient-to-r from-sky-500 to-blue-600 px-7 py-5 shadow-sm">

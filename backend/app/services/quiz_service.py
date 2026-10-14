@@ -2,6 +2,7 @@
 Quiz service — generation, submission, scoring, and persistence.
 """
 from typing import List, Optional, Tuple
+from time import perf_counter
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from app.ai.dispatcher import get_dispatcher
 from app.ai.prompt_builder import get_prompt_builder
 from app.ai.response_formatter import get_response_formatter
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.performance import add_timing
 from app.models.analytics import EventType
 from app.models.history import HistoryItemType
 from app.models.quiz import Quiz, QuizAnswer, QuizAttempt, QuizDifficulty, QuizQuestion
@@ -41,13 +43,17 @@ class QuizService:
     async def generate_from_topic(
         self, user_id: UUID, request: GenerateQuizRequest
     ) -> Quiz:
+        phase_started = perf_counter()
         messages = self.prompt_builder.build_quiz_prompt(
             topic=request.topic,
             question_count=request.question_count,
             difficulty=request.difficulty.value,
             category=request.category,
         )
+        add_timing("prompt_build", (perf_counter() - phase_started) * 1000)
 
+        # Finish the authentication read transaction before waiting on AI.
+        await self.db.commit()
         ai_response, _ = await self.dispatcher.complete(
             messages=messages,
             model=request.model,
@@ -55,10 +61,13 @@ class QuizService:
             temperature=0.5,  # Lower temp for factual accuracy
         )
 
+        phase_started = perf_counter()
         parsed = self.formatter.extract_json(ai_response.content)
         questions_data = self.formatter.validate_quiz_response(parsed)
+        add_timing("response_parse", (perf_counter() - phase_started) * 1000)
 
-        return await self._persist_quiz(
+        phase_started = perf_counter()
+        quiz = await self._persist_quiz(
             user_id=user_id,
             topic=request.topic,
             difficulty=request.difficulty,
@@ -67,15 +76,20 @@ class QuizService:
             questions_data=questions_data,
             is_from_file=False,
         )
+        add_timing("persist_and_history", (perf_counter() - phase_started) * 1000)
+        return quiz
 
     async def generate_from_file(
         self, user_id: UUID, request: GenerateQuizFromFileRequest
     ) -> Quiz:
+        phase_started = perf_counter()
         upload = await self.upload_repo.get_user_upload(user_id, request.upload_id)
+        add_timing("file_text_lookup", (perf_counter() - phase_started) * 1000)
         if not upload or not upload.extracted_text:
             raise NotFoundError("Upload or extracted text", str(request.upload_id))
 
         topic = f"Content from: {upload.original_filename}"
+        phase_started = perf_counter()
         messages = self.prompt_builder.build_quiz_prompt(
             topic=topic,
             question_count=request.question_count,
@@ -83,17 +97,23 @@ class QuizService:
             category=request.category,
             extracted_text=upload.extracted_text,
         )
+        add_timing("prompt_build", (perf_counter() - phase_started) * 1000)
 
+        # Upload content is in memory; release the DB connection before AI.
+        await self.db.commit()
         ai_response, _ = await self.dispatcher.complete(
             messages=messages, model=request.model,
             provider=getattr(request, 'provider', None),
             temperature=0.5
         )
 
+        phase_started = perf_counter()
         parsed = self.formatter.extract_json(ai_response.content)
         questions_data = self.formatter.validate_quiz_response(parsed)
+        add_timing("response_parse", (perf_counter() - phase_started) * 1000)
 
-        return await self._persist_quiz(
+        phase_started = perf_counter()
+        quiz = await self._persist_quiz(
             user_id=user_id,
             topic=topic,
             difficulty=request.difficulty,
@@ -103,6 +123,8 @@ class QuizService:
             is_from_file=True,
             upload_id=request.upload_id,
         )
+        add_timing("persist_and_history", (perf_counter() - phase_started) * 1000)
+        return quiz
 
     async def get_quiz(self, user_id: UUID, quiz_id: UUID) -> Quiz:
         quiz = await self.quiz_repo.get_with_questions(quiz_id)
@@ -188,6 +210,8 @@ class QuizService:
             wrong_categories=wrong_cats,
             correct_categories=correct_cats,
         )
+        # End the read-only quiz transaction before the optional AI call.
+        await self.db.commit()
         try:
             perf_response, _ = await self.dispatcher.complete(
                 messages=perf_messages, temperature=0.6

@@ -1,6 +1,7 @@
 """
 Supabase Storage implementation.
 """
+import asyncio
 import uuid
 from functools import lru_cache
 
@@ -30,7 +31,8 @@ class SupabaseStorageClient(BaseStorageClient):
         storage_path = f"users/{user_id}/{uuid.uuid4()}_{safe_name}"
 
         try:
-            self._client.storage.from_(bucket).upload(
+            await asyncio.to_thread(
+                self._client.storage.from_(bucket).upload,
                 path=storage_path,
                 file=content,
                 file_options={"content-type": mime_type},
@@ -43,8 +45,10 @@ class SupabaseStorageClient(BaseStorageClient):
         self, bucket: str, path: str, expires_in: int = 3600
     ) -> str:
         try:
-            response = self._client.storage.from_(bucket).create_signed_url(
-                path, expires_in
+            response = await asyncio.to_thread(
+                self._client.storage.from_(bucket).create_signed_url,
+                path,
+                expires_in,
             )
             return response["signedURL"]
         except Exception as exc:
@@ -52,7 +56,10 @@ class SupabaseStorageClient(BaseStorageClient):
 
     async def delete(self, bucket: str, path: str) -> None:
         try:
-            self._client.storage.from_(bucket).remove([path])
+            await asyncio.to_thread(
+                self._client.storage.from_(bucket).remove,
+                [path],
+            )
         except Exception as exc:
             raise FileProcessingError(f"Storage deletion failed: {exc}") from exc
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { analyticsApi } from '$api/analytics';
 	import type { AnalyticsDashboard } from '$types';
 	import Card from '$components/ui/Card.svelte';
@@ -11,11 +11,14 @@
 	let loading = true;
 
 	onMount(async () => {
+		const flowStarted = performance.now();
 		try {
 			const res = await analyticsApi.getDashboard();
 			dashboard = res.data ?? null;
 		} finally {
 			loading = false;
+			await tick();
+			console.debug(`[flow timing] analytics page visible: ${(performance.now() - flowStarted).toFixed(0)} ms`);
 		}
 	});
 

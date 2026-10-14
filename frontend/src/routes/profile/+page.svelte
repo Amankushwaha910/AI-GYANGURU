@@ -33,7 +33,7 @@
 			});
 			if (res.data) authStore.setUser(res.data);
 			toast.success('Profile updated');
-		} catch (e: any) {
+		} catch (e: unknown) {
 			toast.error(e instanceof ApiClientError ? e.message : 'Failed to update profile');
 		} finally { savingProfile = false; }
 	}
@@ -46,7 +46,7 @@
 			await authApi.changePassword({ current_password: currentPassword, new_password: newPassword });
 			toast.success('Password changed successfully');
 			currentPassword = ''; newPassword = ''; confirmPassword = '';
-		} catch (e: any) {
+		} catch (e: unknown) {
 			toast.error(e instanceof ApiClientError ? e.message : 'Failed to change password');
 		} finally { changingPassword = false; }
 	}
@@ -57,7 +57,7 @@
 			authStore.clearAuth();
 			toast.info('Account deleted. Goodbye!');
 			goto('/');
-		} catch (e: any) {
+		} catch {
 			toast.error('Failed to delete account');
 		}
 	}

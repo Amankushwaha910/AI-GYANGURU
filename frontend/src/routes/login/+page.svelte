@@ -4,7 +4,6 @@
 	import { toast } from '$stores/toast';
 	import { authApi } from '$api/auth';
 	import { ApiClientError } from '$api/client';
-	import Button from '$components/ui/Button.svelte';
 	import Input from '$components/ui/Input.svelte';
 	import { GraduationCap, Eye, EyeOff } from 'lucide-svelte';
 
@@ -20,14 +19,20 @@
 		if (!password) { errors.password = 'Password is required'; return; }
 
 		loading = true;
+		const flowStarted = performance.now();
 		try {
 			const res = await authApi.login({ email, password });
 			if (res.data) {
+				// The login endpoint returns the user with the token pair. Keep /auth/me
+				// for hard-refresh session restoration in the layout, not this flow.
+				if (!res.data.user) {
+					throw new ApiClientError('AUTH_RESPONSE_INVALID', 'Login response did not include account details. Please try again.', 500);
+				}
 				authStore.setTokens(res.data.access_token, res.data.refresh_token);
-				const meRes = await authApi.me();
-				if (meRes.data) authStore.setUser(meRes.data);
+				authStore.setUser(res.data.user);
 				toast.success('Welcome back!');
-				goto('/dashboard');
+				await goto('/dashboard');
+				console.debug(`[auth flow timing] login to dashboard navigation: ${(performance.now() - flowStarted).toFixed(0)} ms`);
 			}
 		} catch (err) {
 			if (err instanceof ApiClientError) {
@@ -42,17 +47,39 @@
 		}
 	}
 
-	/* Floating educational icons arranged in an orbit */
-	const floatIcons = [
-		{ emoji: '📚', top: '12%', left: '14%', delay: '0s',    dur: '3.8s' },
-		{ emoji: '🎯', top: '8%',  left: '58%', delay: '0.7s',  dur: '4.2s' },
-		{ emoji: '💡', top: '28%', left: '80%', delay: '1.3s',  dur: '3.6s' },
-		{ emoji: '✏️', top: '60%', left: '84%', delay: '0.4s',  dur: '4.0s' },
-		{ emoji: '🔬', top: '80%', left: '68%', delay: '1.0s',  dur: '3.7s' },
-		{ emoji: '🏆', top: '84%', left: '22%', delay: '0.6s',  dur: '4.3s' },
-		{ emoji: '📊', top: '68%', left: '8%',  delay: '1.5s',  dur: '3.5s' },
-		{ emoji: '⚡', top: '36%', left: '4%',  delay: '0.2s',  dur: '4.1s' },
-	];
+	/*
+	 * Floating educational icons — evenly distributed in a circle.
+	 *
+	 * Centre of the left panel = (50%, 50%).
+	 * Radius expressed as a percentage of the panel width (the panel is ~50vw
+	 * but we keep math in "% of container" so it stays responsive).
+	 *
+	 * For N icons: angle_i = -90° + i * (360° / N)
+	 *   x = 50% + radius_pct * cos(angle_i)
+	 *   y = 50% + radius_pct * sin(angle_i)
+	 *
+	 * radius_pct ≈ 37 keeps icons just inside the outermost ring (460 px → 230 px,
+	 * which is ~37% of a ~620 px-wide half-screen at 1280 px viewport).
+	 */
+	const iconEmojis = ['📚', '🎯', '💡', '✏️', '🔬', '🏆', '📊', '⚡'];
+	const iconDelays = ['0s', '0.7s', '1.3s', '0.4s', '1.0s', '0.6s', '1.5s', '0.2s'];
+	const iconDurs   = ['3.8s', '4.2s', '3.6s', '4.0s', '3.7s', '4.3s', '3.5s', '4.1s'];
+
+	const RADIUS_PCT = 37;   // % of container width/height — same for every icon
+	const N = iconEmojis.length;
+
+	const floatIcons = iconEmojis.map((emoji, i) => {
+		// Start at -90° so icon 0 is at the top; go clockwise
+		const angleDeg = -90 + i * (360 / N);
+		const angleRad = (angleDeg * Math.PI) / 180;
+		const leftPct  = 50 + RADIUS_PCT * Math.cos(angleRad);
+		const topPct   = 50 + RADIUS_PCT * Math.sin(angleRad);
+		return {
+			emoji,
+			positionStyle: `left:${leftPct.toFixed(3)}%; top:${topPct.toFixed(3)}%;`,
+			animationStyle: `animation: floatIcon ${iconDurs[i]} ease-in-out ${iconDelays[i]} infinite;`,
+		};
+	});
 </script>
 
 <svelte:head><title>Sign In — AI GyanGuru</title></svelte:head>
@@ -77,13 +104,14 @@
 		<div class="absolute -bottom-24 -right-16 w-80 h-80 rounded-full
 		            bg-blue-200/40 blur-3xl pointer-events-none"></div>
 
-		<!-- Floating educational icons -->
+		<!-- Floating educational icons — evenly distributed around the rings -->
 		{#each floatIcons as icon}
 			<span
-				class="absolute text-2xl select-none pointer-events-none"
-				style="top:{icon.top}; left:{icon.left};
-				       animation: floatIcon {icon.dur} ease-in-out {icon.delay} infinite;"
-			>{icon.emoji}</span>
+				class="absolute select-none pointer-events-none"
+				style={icon.positionStyle + ' transform:translate(-50%,-50%);'}
+			>
+				<span class="inline-block text-2xl" style={icon.animationStyle}>{icon.emoji}</span>
+			</span>
 		{/each}
 
 		<!-- Central branding -->
@@ -205,20 +233,10 @@
 					{/if}
 				</div>
 
-				<!-- Remember + Forgot -->
+				<!-- Session persistence + password reset availability -->
 				<div class="flex items-center justify-between text-sm">
-					<label class="flex items-center gap-2 cursor-pointer select-none">
-						<input
-							type="checkbox"
-							class="h-4 w-4 rounded border-gray-300 dark:border-gray-600
-							       text-sky-600 focus:ring-sky-500"
-						/>
-						<span class="text-gray-600 dark:text-gray-400">Keep me signed in</span>
-					</label>
-					<a href="/forgot-password"
-					   class="font-medium text-sky-600 dark:text-sky-400 hover:underline">
-						Forgot password?
-					</a>
+					<span class="text-xs text-gray-500 dark:text-gray-400">Sign-in is saved in this browser.</span>
+					<span class="text-xs text-gray-500 dark:text-gray-400">Password reset is not available yet.</span>
 				</div>
 
 				<button
